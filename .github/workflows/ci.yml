@@ -1,0 +1,28 @@
+name: ci
+
+# The orphan `tick` ledger branch holds only Markdown, no code — never test it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Configure git identity (store integration tests commit)
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name CI
+      - run: python -m pip install --upgrade pip pytest
+      - run: python -m pytest -q
+      - name: Build the zipapp
+        run: python build.py
