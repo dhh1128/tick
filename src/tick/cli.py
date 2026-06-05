@@ -19,6 +19,7 @@ def cmd_init(args) -> int:
     print(f"  store:  {st.worktree}")
     print(f"  branch: {st.branch}")
     print(f"  remote: {st.remote or '(none — set later with tick.remote)'}")
+    print(f"  autopush: {'on' if st.autopush else 'off'} (background backup after each mutation)")
     return 0
 
 
@@ -78,6 +79,13 @@ def cmd_ls(args) -> int:
     for t in ticks:
         suffix = "  (closed)" if not t.is_open else ""
         print(f"!{t.id}  {t.kind:5}  {t.title}{suffix}")
+    pending = store.unpushed_count(st)
+    if pending:
+        print(
+            f"note: {pending} ledger commit(s) not yet backed up "
+            f"(auto-push offline?) — run `tick sync` when back online",
+            file=sys.stderr,
+        )
     return 0
 
 

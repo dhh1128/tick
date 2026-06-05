@@ -92,7 +92,7 @@ mark (`tick show <id>`).
 | `tick grep <text>` | Search tick titles/bodies. |
 | `tick refs <id>` | Find the tick's mark sites in the code. |
 | `tick orphans` | Lint: marks with no tick, open ticks with no mark. |
-| `tick sync` | `pull --rebase` then push the `tick` branch. |
+| `tick sync` | `pull --rebase` then push the `tick` branch (mutations already auto-push in the background; `sync` pulls others' changes and flushes any offline backlog). |
 | `tick link` | Add a `.tick` symlink in an additional worktree. |
 
 ## How it stores things
@@ -102,8 +102,12 @@ checked out once as a persistent worktree at `<repo-root>/.tick/` and ignored on
 the code branches via a single `/.tick` line in `.gitignore`. The multiple
 worktrees of a repo share one object store, so a tick added in one worktree is
 instantly visible in the others; an exclusive `flock` makes concurrent writes
-safe. `tick sync` pushes the branch to the same remote as the code (an ignorable
-branch) for backup and other machines. See [`SPEC.md`](SPEC.md) §3–4.
+safe. Each mutation also fires a **best-effort background push** of the `tick`
+branch to the same remote as the code (an ignorable branch), so the ledger backs
+itself up with no manual step — offline just defers to the next mutation or
+`tick sync`. Turn it off with `git config tick.autopush false`. `tick sync` is
+the explicit pull-and-flush (e.g. to pull another machine's changes). See
+[`SPEC.md`](SPEC.md) §3–4.
 
 ## Agents
 

@@ -114,7 +114,12 @@ stable primary clone.
 
 The `tick` branch is pushed to the **same remote as the code** (decision: simplest, zero extra setup),
 appearing as an ignorable branch named `tick`. `tick init` records `tick.remote` (default the existing
-`origin`) and `tick.branch` (`tick`). `tick sync` does `git pull --rebase` then `git push <remote> tick`.
+`origin`) and `tick.branch` (`tick`). Backup is **automatic**: after each mutation tick fires a
+best-effort background `git push` of the ledger branch (`tick.autopush`, default on — set off with
+`git config tick.autopush false`). It never blocks or fails the write; offline/rejected pushes just defer
+to the next mutation. `tick sync` is the explicit full reconcile — `git pull --rebase` then
+`git push <remote> tick` — used to **pull** another machine's changes and to flush any deferred backlog
+(surfaced as an "N not yet backed up" hint on `tick ls`).
 
 To keep `sync` from paying the code repo's test tax, `tick init` (with confirmation) installs a guard at
 the **top of the repo's `pre-push` hook**: *if every ref being pushed is `refs/heads/tick`, `exit 0`.*
@@ -126,8 +131,10 @@ mutations never push — see §4.)
 - A mutation is a commit to the **`tick` branch**, never the code branch — so the code branch's
   pre-push hook and CI never fire on it.
 - The **only** code-branch commit `tick` ever makes is the one-time `/.tick` `.gitignore` line at init.
-- Per-write = an instant local commit (sub-second, offline). Pushing is occasional and explicit
-  (`tick sync`), made fast by the §3.4 pre-push guard.
+- Per-write = an instant local commit (sub-second, offline). Backup push is **automatic but off the
+  write path** — a detached best-effort `git push` fires after the commit, so the write returns
+  instantly and never waits on (or fails because of) the network. `tick sync` remains for explicit
+  pull+flush. Both are made fast by the §3.4 pre-push guard.
 
 ---
 
@@ -143,8 +150,12 @@ without clobbering each other.
    (`<store>/.tick.lock`, listed in the `tick` branch's own ignore). This serializes local writers, so
    **both quick appends (`tick note`) and full rewrites (`tick edit`) are safe** — there is no
    append-only restriction; you can correct or rewrite any prior note.
-3. **Push is off the write path.** Writes only commit locally (instant, offline-capable). `tick sync`
-   does `git pull --rebase` then push; one-file-per-tick keeps rebases conflict-free.
+3. **Push is off the write path.** Writes commit locally (instant, offline-capable); a best-effort
+   background push then backs the commit up without blocking the write (`tick.autopush`). `tick sync`
+   does `git pull --rebase` then push; one-file-per-tick keeps rebases conflict-free. Concurrent
+   background pushes only ever send supersets of the same history, so the worst case is a benign
+   ref-lock loss that the next push or `sync` resolves — never a lost commit (the local commit is
+   already durable).
 4. **Interactive edits:** `tick edit` opens `$EDITOR`; the lock is held only briefly at write-back +
    commit, not for the whole editor session. Same-tick concurrent edits on one machine are
    last-writer-wins (vanishingly rare for solo use); cross-machine divergence is resolved by `sync`'s
@@ -349,6 +360,9 @@ zipapp is the primary artifact.
   worktree repair. Legacy absolute config values are migrated to relative on first resolve after a move.
 - **Concurrency:** safety from `flock` (not append-only); notes are fully editable.
 - **Push target:** same remote as the code, branch `tick` (ignorable); not a separate private remote.
+- **Automatic backup (`6pyc`):** mutations fire a best-effort, detached background `git push` of the
+  ledger branch (`tick.autopush`, default on), so backup needs no manual `tick sync`. Kept off the write
+  path to preserve the instant/offline write; `sync` stays as the explicit pull+flush.
 - **Hosting:** `github.com/dhh1128/tick` (personal), not `provenant-dev`.
 - **Distribution:** single-file zipapp built to `dist/tick`, published to GitHub Releases by
   `scripts/release.py` + the `release` workflow, curl-installable to `~/.local/bin/tick` (repo public);

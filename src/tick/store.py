@@ -63,6 +63,7 @@ class Store:
     worktree: Path
     remote: str | None
     branch: str = BRANCH
+    autopush: bool = True
 
 
 # ------------------------------------------------------------------- git helpers
@@ -88,6 +89,13 @@ def git(args, cwd, check=True, input=None) -> str:
 def _config_get(key, cwd, default=None):
     p = _run(["git", "config", "--get", key], cwd)
     return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else default
+
+
+def _config_bool(key, cwd, default):
+    v = _config_get(key, cwd)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _config_set(key, value, cwd):
@@ -168,6 +176,7 @@ def resolve(cwd=".") -> Store:
         worktree=worktree,
         remote=_config_get("tick.remote", cwd),
         branch=_config_get("tick.branch", cwd, BRANCH),
+        autopush=_config_bool("tick.autopush", cwd, True),
     )
 
 
@@ -198,6 +207,7 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
 
     _config_set("tick.worktree", _rel_or_abs(store_path, primary_root), cwd)
     _config_set("tick.branch", BRANCH, cwd)
+    _config_set("tick.autopush", "true", cwd)  # back up the ledger after each mutation; off via `git config tick.autopush false`
     remote = remote or _detect_remote(cwd)
     if remote:
         _config_set("tick.remote", remote, cwd)
@@ -250,6 +260,47 @@ def _lock(store: Store):
         fh.close()
 
 
+# ----------------------------------------------------------------- auto-backup
+
+
+def _autopush(store: Store) -> subprocess.Popen | None:
+    """Best-effort background backup of the ledger branch after a mutation.
+
+    Fire-and-forget: spawn a detached `git push` and return immediately, so the
+    write stays instant and offline-capable (SPEC §4). It never blocks and never
+    fails the mutation — the local commit is already durable, so a failed/offline
+    push simply defers to the next mutation or an explicit `tick sync`. Disabled
+    when `tick.autopush` is false or no remote is configured; returns None then.
+    Returns the Popen handle (callers ignore it; tests await it)."""
+    if not store.autopush or not store.remote:
+        return None
+    return subprocess.Popen(
+        ["git", "push", store.remote, f"HEAD:{store.branch}"],
+        cwd=str(store.worktree),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # outlive this CLI process; immune to its signals
+    )
+
+
+def unpushed_count(store: Store) -> int:
+    """Ledger commits not yet on the remote-tracking ref — a cheap, network-free
+    backlog gauge (git advances refs/remotes/<remote>/<branch> on a successful
+    push, so a nonzero count means auto-push has been failing, e.g. offline).
+    Returns 0 when there's no remote or no remote-tracking ref yet."""
+    if not store.remote:
+        return 0
+    out = git(
+        ["rev-list", "--count", f"refs/remotes/{store.remote}/{store.branch}..HEAD"],
+        store.worktree,
+        check=False,
+    )
+    try:
+        return int(out)
+    except ValueError:
+        return 0  # remote-tracking ref absent (never pushed) — don't guess
+
+
 # ----------------------------------------------------------------------- CRUD
 
 
@@ -289,6 +340,7 @@ def add(store: Store, title: str, kind=core.DEFAULT_KIND, tags=None, clock=core.
         id = core.generate_id(existing_ids(store), rng)
         t = core.Tick(id=id, title=title, kind=kind, tags=list(tags), created=core.format_ts(clock()))
         _write_commit(store, id, core.serialize_tick(t), f"tick add {id}: {title}")
+    _autopush(store)
     return id
 
 
@@ -297,6 +349,7 @@ def note(store: Store, id: str, text: str, clock=core.utc_now):
         t = read_tick(store, id)
         t.body = core.append_note(t.body, core.format_ts(clock()), text)
         _write_commit(store, id, core.serialize_tick(t), f"tick note {id}")
+    _autopush(store)
 
 
 def off(store: Store, id: str, clock=core.utc_now):
@@ -304,6 +357,7 @@ def off(store: Store, id: str, clock=core.utc_now):
         t = read_tick(store, id)
         t.closed = core.format_ts(clock())
         _write_commit(store, id, core.serialize_tick(t), f"tick off {id}: {t.title}")
+    _autopush(store)
     return refs(store, id)  # remaining mark sites to warn about
 
 
@@ -312,6 +366,7 @@ def reopen(store: Store, id: str):
         t = read_tick(store, id)
         t.closed = None
         _write_commit(store, id, core.serialize_tick(t), f"tick reopen {id}: {t.title}")
+    _autopush(store)
 
 
 def edit(store: Store, id: str, editor=None) -> bool:
@@ -328,6 +383,7 @@ def edit(store: Store, id: str, editor=None) -> bool:
     with _lock(store):
         git(["add", p.name], store.worktree)
         git(["commit", "-s", "-m", f"tick edit {id}"], store.worktree)
+    _autopush(store)
     return True
 
 

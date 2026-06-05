@@ -167,6 +167,67 @@ def test_concurrent_adds_are_serialized(repo):
     assert all(core.is_valid_id(i) for i in ids)
 
 
+def _bare_remote(repo, tmp_path):
+    bare = tmp_path / "remote.git"
+    _git(["init", "--bare", "-b", "main", str(bare)], tmp_path)
+    _git(["remote", "add", "origin", str(bare)], repo)
+    return bare
+
+
+def test_init_enables_autopush_and_detects_remote(repo, tmp_path):
+    _bare_remote(repo, tmp_path)
+    st = S.init(cwd=repo)
+    assert st.autopush is True
+    assert st.remote == "origin"
+    assert _git(["config", "--get", "tick.autopush"], repo).stdout.strip() == "true"
+
+
+def test_autopush_backs_up_ledger_branch_to_remote(repo, tmp_path):
+    """The fire-and-forget push the verbs make lands the ledger branch on the
+    remote. autopush is toggled off for the `add` so the single explicit push we
+    await doesn't race the verb's own background push over creating the branch."""
+    bare = _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)
+    st = S.resolve(cwd=repo)
+    S.add(st, "back me up")                         # local commit only
+    _git(["config", "tick.autopush", "true"], repo)
+    st = S.resolve(cwd=repo)
+    proc = S._autopush(st)                          # the same call a verb makes
+    assert proc is not None
+    assert proc.wait(timeout=30) == 0
+    assert "refs/heads/tick" in _git(["ls-remote", "--heads", str(bare), "tick"], repo).stdout
+
+
+def test_autopush_is_noop_without_remote_or_when_disabled(repo, tmp_path):
+    st = S.init(cwd=repo)              # the base fixture has no remote
+    assert st.remote is None
+    assert S._autopush(st) is None    # nothing to push to
+
+    _bare_remote(repo, tmp_path)
+    _git(["config", "tick.autopush", "false"], repo)
+    st2 = S.resolve(cwd=repo)
+    assert st2.autopush is False
+    assert S._autopush(st2) is None   # opted out
+
+
+def test_unpushed_count_tracks_backlog(repo, tmp_path):
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)   # control pushes by hand here
+    st = S.resolve(cwd=repo)
+    S.add(st, "one")                                   # local commit only
+    _git(["config", "tick.autopush", "true"], repo)
+    st = S.resolve(cwd=repo)
+    assert S._autopush(st).wait(timeout=30) == 0       # single push -> sets the tracking ref
+    assert S.unpushed_count(st) == 0
+
+    _git(["config", "tick.autopush", "false"], repo)
+    st2 = S.resolve(cwd=repo)
+    S.add(st2, "two")                                  # local commit, no push
+    assert S.unpushed_count(st2) == 1
+
+
 def test_pre_push_guard_chains_real_hook(repo, tmp_path):
     st = S.init(cwd=repo)
     # Pretend the repo already had a heavy pre-push hook.
