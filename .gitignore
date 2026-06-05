@@ -5,8 +5,7 @@ __pycache__/
 dist/
 build/
 
-# zipapp build artifact (single-file executable named `tick` at repo root)
-/tick
+# zipapp build artifact (built into dist/, which is ignored above)
 *.pyz
 
 # tick's own ledger worktree, created by dogfooding `tick init`

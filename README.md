@@ -26,14 +26,16 @@ or cross-repo views. See [`SPEC.md`](SPEC.md) for the full design and rationale.
 Single-file zipapp (zero runtime deps; needs Python 3.11+ on the box):
 
 ```sh
-curl -fsSL https://github.com/dhh1128/tick/releases/latest/download/tick -o ~/bin/tick && chmod +x ~/bin/tick
+curl -fsSL https://github.com/dhh1128/tick/releases/latest/download/tick \
+  -o ~/.local/bin/tick && chmod +x ~/.local/bin/tick
 ```
 
-Or from source:
+(`~/.local/bin` is the XDG-standard user bin directory; make sure it's on your
+`PATH`.) Or from source:
 
 ```sh
 git clone https://github.com/dhh1128/tick && cd tick
-python3 build.py && install -m 0755 tick ~/bin/tick   # or: pipx install .
+python3 build.py && install -m 0755 dist/tick ~/.local/bin/tick   # or: pipx install .
 ```
 
 ## Quickstart
@@ -119,11 +121,26 @@ Paste [`docs/agents-stanza.md`](docs/agents-stanza.md) into a target repo's
 
 ```sh
 python3 -m pytest -q     # tests (pure core + temp-repo integration + e2e)
-python3 build.py         # build the ./tick zipapp
+python3 build.py         # build the zipapp -> dist/tick
 ```
 
 Built test-first; `tick.core` is pure and fully unit-tested, `tick.store` is the
 side-effecting layer integration-tested against a temporary git repo.
+
+## Releasing
+
+`scripts/release.py` cuts a release. It bumps the version in `pyproject.toml`,
+runs the guardrails (clean tree, on `main`, in sync with `origin`, tests pass),
+commits with a DCO sign-off, and pushes `main` plus an annotated `vX.Y.Z` tag.
+The tag push triggers the [`release`](.github/workflows/release.yml) workflow,
+which builds `dist/tick` and attaches it to a GitHub release — that's what makes
+the `releases/latest/download/tick` install URL above resolve.
+
+```sh
+python3 scripts/release.py                    # patch bump, default message
+python3 scripts/release.py --minor -m "..."   # minor / --major / --patch
+python3 scripts/release.py --set 1.0.0 -m "..."  # explicit version (e.g. first release)
+```
 
 ## License
 

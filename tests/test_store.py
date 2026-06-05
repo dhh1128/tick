@@ -1,6 +1,7 @@
 """Integration tests for tick.store against a temporary real git repo (SPEC §10)."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,10 +39,47 @@ def test_init_creates_branch_worktree_config(repo):
     assert st.worktree == repo / ".tick"
     assert st.worktree.is_dir()
     assert "tick" in _git(["branch", "--list", "tick"], repo).stdout
-    assert _git(["config", "--get", "tick.worktree"], repo).stdout.strip() == str(repo / ".tick")
+    # Stored relative to the repo root (not absolute) so a move/rename can't strand it.
+    assert _git(["config", "--get", "tick.worktree"], repo).stdout.strip() == ".tick"
     assert "/.tick" in (repo / ".gitignore").read_text()
     # idempotent
     assert S.init(cwd=repo).worktree == st.worktree
+
+
+def test_store_relocatable_after_repo_move(repo, tmp_path):
+    """Renaming/moving the repo dir must not strand the ledger: config is stored
+    relative and the linked-worktree pointer self-heals on resolve — no manual
+    `git worktree repair` or config reset needed."""
+    st = S.init(cwd=repo)
+    id = S.add(st, "survives a move")
+
+    dest = tmp_path / "proj-renamed"
+    shutil.move(str(repo), str(dest))
+
+    # Resolve + read + mutate all work from the new location with zero fixup.
+    st2 = S.resolve(cwd=dest)
+    assert st2.worktree == dest / ".tick"
+    assert S.read_tick(st2, id).title == "survives a move"
+    id2 = S.add(st2, "added after the move")
+    assert {id, id2} <= S.existing_ids(st2)
+
+
+def test_legacy_absolute_config_migrates_on_resolve(repo, tmp_path):
+    """A ledger initialized before this fix stored an absolute `tick.worktree`. After a
+    move, resolve recovers it by basename under the new root and rewrites it relative."""
+    st = S.init(cwd=repo)
+    id = S.add(st, "legacy")
+    # Simulate the pre-fix on-disk state: an absolute config value.
+    _git(["config", "tick.worktree", str(repo / ".tick")], repo)
+
+    dest = tmp_path / "proj-moved"
+    shutil.move(str(repo), str(dest))
+
+    st2 = S.resolve(cwd=dest)
+    assert st2.worktree == dest / ".tick"
+    assert S.read_tick(st2, id).title == "legacy"
+    # Config has been migrated to a relative value.
+    assert _git(["config", "--get", "tick.worktree"], dest).stdout.strip() == ".tick"
 
 
 def test_init_adds_gitignore_in_exactly_one_code_commit(repo):

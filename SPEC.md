@@ -3,7 +3,7 @@
 **Status:** DRAFT — awaiting Daniel's approval before implementation.
 **Owner / hosting:** `github.com/dhh1128/tick` — Daniel's **personal** account, **not** the `provenant-dev` org.
 **Language:** Python 3.11+, **zero runtime dependencies**. Built **test-first (TDD)** with `pytest`.
-**Distribution:** single-file **zipapp**, curl-installable to `~/bin/tick` (see §9).
+**Distribution:** single-file **zipapp**, curl-installable to `~/.local/bin/tick` (see §9).
 
 ---
 
@@ -75,9 +75,18 @@ The `tick` branch is checked out **once** as a persistent worktree, located **in
 
 Discovery is **config-based, not cwd-based**, so the tool works from any worktree:
 
-- `tick init` records the absolute store path in shared git config: `git config tick.worktree <path>`.
-- Every command resolves the store via `git rev-parse --git-common-dir` → `git config tick.worktree`.
-  (`--git-common-dir` resolves correctly from linked worktrees, and shared config is visible to all.)
+- `tick init` records the store path in shared git config **relative to the repo root**:
+  `git config tick.worktree .tick`. (An out-of-repo `--store <path>` is recorded absolute, since it has
+  no relative anchor; such a store is not relocatable.)
+- Every command resolves the store by joining `git rev-parse --git-common-dir` (whose parent is the
+  primary checkout) with `tick.worktree`. Because git recomputes `--git-common-dir` from the live
+  location, the join always lands on the current path — so **moving or renaming the repo does not strand
+  the ledger** (no config reset needed). A legacy *absolute* `tick.worktree` is honored if it still
+  exists, and otherwise recovered by basename under the moved root and rewritten relative on resolve.
+- The linked `.tick/` worktree also carries git's own absolute admin pointers, which a move breaks
+  independently of config. On every resolve, tick checks the pointer and, if broken, self-heals it with
+  `git worktree repair` — so a move needs **no** manual `git worktree repair` either. (A valid pointer
+  costs one small file read; repair only fires when actually broken.)
 
 The real `.tick/` worktree lives inside the **primary** checkout; additional worktrees reach it through
 a symlink (§3.3). Caveat: the primary checkout is therefore load-bearing for those symlinks — fine for a
@@ -256,17 +265,20 @@ A clean seam between **pure logic** and **side effects** is what makes TDD natur
 - **Clock & RNG are injected** (parameters / small protocols), defaulting to a UTC
   `datetime.now(timezone.utc)` and `secrets`/`random` in production, pinned in tests.
 
-**Packaging / distribution:** a **single-file zipapp** (`python -m zipapp …` over the `tick` package
-with a `__main__.py`; shebang `/usr/bin/env python3`). Because runtime deps are zero, the zipapp is just
-our own modules. Released on `dhh1128/tick`; installed with one line:
+**Packaging / distribution:** a **single-file zipapp** (`python build.py` over the `tick` package via
+`zipapp`; shebang `/usr/bin/env python3`), built into `dist/tick` (gitignored — never at the repo root).
+Because runtime deps are zero, the zipapp is just our own modules. `scripts/release.py` bumps the
+version, tags `vX.Y.Z`, and pushes; the `release` GitHub Actions workflow builds the zipapp and attaches
+it to a GitHub release. Installed with one line (repo is public so the asset URL needs no auth):
 
 ```
-curl -fsSL https://github.com/dhh1128/tick/releases/latest/download/tick -o ~/bin/tick && chmod +x ~/bin/tick
+curl -fsSL https://github.com/dhh1128/tick/releases/latest/download/tick -o ~/.local/bin/tick && chmod +x ~/.local/bin/tick
 ```
 
-(Requires Python 3.11+ on the target.) Dev workflow: run from source (`python -m tick`) + `pytest`;
-dev-only dependency is `pytest`. `pyproject.toml` defines the package and a `tick` entry point for
-optional `pip`/`pipx` installs, but the zipapp is the primary artifact.
+(`~/.local/bin` is the XDG-standard user bin directory; requires Python 3.11+ on the target.) Dev
+workflow: run from source (`python -m tick`) + `pytest`; dev-only dependency is `pytest`.
+`pyproject.toml` defines the package and a `tick` entry point for optional `pip`/`pipx` installs, but the
+zipapp is the primary artifact.
 
 ---
 
@@ -331,10 +343,16 @@ optional `pip`/`pipx` installs, but the zipapp is the primary artifact.
 - **Storage:** in-repo `.tick/` worktree on an orphan `tick` branch; ignored via one tracked
   `/.tick` `.gitignore` line; config-based discovery. (Sibling and `~/.local/share` alternatives
   rejected.)
+- **Relocatable store** (resolves `5aqn`)**:** `tick.worktree` is stored *relative* to the repo root and resolved
+  against `--git-common-dir`'s parent; git's linked-worktree pointer is self-healed with
+  `git worktree repair` on resolve. A repo move/rename therefore needs no manual config reset or
+  worktree repair. Legacy absolute config values are migrated to relative on first resolve after a move.
 - **Concurrency:** safety from `flock` (not append-only); notes are fully editable.
 - **Push target:** same remote as the code, branch `tick` (ignorable); not a separate private remote.
 - **Hosting:** `github.com/dhh1128/tick` (personal), not `provenant-dev`.
-- **Distribution:** single-file zipapp, curl-installable; Python 3.11+, zero runtime deps.
+- **Distribution:** single-file zipapp built to `dist/tick`, published to GitHub Releases by
+  `scripts/release.py` + the `release` workflow, curl-installable to `~/.local/bin/tick` (repo public);
+  Python 3.11+, zero runtime deps.
 - **Timestamps:** ISO-8601, UTC, minute precision.
 
 ---

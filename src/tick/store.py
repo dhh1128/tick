@@ -97,18 +97,75 @@ def _config_set(key, value, cwd):
 # ----------------------------------------------------------------- resolve / init
 
 
+def _primary_root(common: Path) -> Path:
+    """The primary worktree's root — where the `.tick/` store physically lives.
+
+    `--git-common-dir` is `<primary>/.git` for the standard layout tick targets,
+    so its parent is the primary checkout. Anchoring on this (rather than an
+    absolute config value or the cwd worktree's `--show-toplevel`) is what makes
+    the store survive a repo move/rename: git recomputes the common dir from the
+    live location, so the join always lands on the current path even after a move."""
+    return common.parent
+
+
+def _rel_or_abs(store_path: Path, primary_root: Path) -> str:
+    """Record the store relative to the repo root when it lives inside it (so a
+    move/rename doesn't strand the path); absolute for an out-of-repo `--store`."""
+    try:
+        return str(store_path.relative_to(primary_root))
+    except ValueError:
+        return str(store_path)
+
+
+def _resolve_store_path(raw: str, primary_root: Path) -> tuple[Path, bool]:
+    """Map the stored `tick.worktree` value to a live path. Returns
+    (path, migrate) where migrate signals a legacy absolute value that has been
+    recovered under the moved repo and should be rewritten relative."""
+    p = Path(raw)
+    if not p.is_absolute():
+        return primary_root / p, False
+    if p.exists():
+        return p, False  # legacy absolute config, still valid — honor it
+    # Legacy absolute path stranded by a repo move: recover by basename under the
+    # current primary root and signal the caller to migrate it to a relative value.
+    candidate = primary_root / p.name
+    if candidate.exists():
+        return candidate, True
+    return p, False  # nothing better; let the downstream "no such tick" surface
+
+
+def _repair_worktree_link(primary_root: Path, worktree: Path) -> None:
+    """Self-heal a linked-worktree pointer broken by a repo move/rename so git
+    operations inside the store work without a manual `git worktree repair`. Cheap
+    on the hot path: a valid pointer returns after one small file read."""
+    dotgit = worktree / ".git"
+    if not dotgit.is_file():
+        return  # not a linked worktree (absent, or a plain dir) — nothing to do
+    line = dotgit.read_text().strip()
+    if line.startswith("gitdir:"):
+        target = Path(line.split(":", 1)[1].strip())
+        if target.exists():
+            return  # linkage intact
+    git(["worktree", "repair", str(worktree)], primary_root, check=False)
+
+
 def resolve(cwd=".") -> Store:
     code_root = git(["rev-parse", "--show-toplevel"], cwd, check=False)
     if not code_root:
         raise TickError("not inside a git repository")
-    worktree = _config_get("tick.worktree", cwd)
-    if not worktree:
+    raw = _config_get("tick.worktree", cwd)
+    if not raw:
         raise TickError("tick is not initialized in this repo — run `tick init`")
-    common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd)
+    common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
+    primary_root = _primary_root(common)
+    worktree, migrate = _resolve_store_path(raw, primary_root)
+    if migrate:
+        _config_set("tick.worktree", _rel_or_abs(worktree, primary_root), cwd)
+    _repair_worktree_link(primary_root, worktree)
     return Store(
         code_root=Path(code_root),
-        git_common_dir=Path(common),
-        worktree=Path(worktree),
+        git_common_dir=common,
+        worktree=worktree,
         remote=_config_get("tick.remote", cwd),
         branch=_config_get("tick.branch", cwd, BRANCH),
     )
@@ -123,7 +180,9 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     if _config_get("tick.worktree", cwd):
         return resolve(cwd)  # idempotent
 
-    store_path = Path(store_path).resolve() if store_path else (code_root / ".tick")
+    common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
+    primary_root = _primary_root(common)
+    store_path = Path(store_path).resolve() if store_path else (primary_root / ".tick")
 
     # Create an orphan branch from an empty root commit (no --orphan needed; robust
     # across git versions), then check it out as a worktree.
@@ -137,7 +196,7 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     git(["add", "-A"], store_path)
     git(["commit", "-s", "-m", "tick: initialize ledger store"], store_path)
 
-    _config_set("tick.worktree", str(store_path), cwd)
+    _config_set("tick.worktree", _rel_or_abs(store_path, primary_root), cwd)
     _config_set("tick.branch", BRANCH, cwd)
     remote = remote or _detect_remote(cwd)
     if remote:
