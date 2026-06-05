@@ -10,7 +10,7 @@ critical section behind an exclusive flock.
 from __future__ import annotations
 
 import contextlib
-import fcntl
+import fcntl  # !55ez POSIX-only locking; Windows has no fcntl
 import os
 import shlex
 import subprocess
