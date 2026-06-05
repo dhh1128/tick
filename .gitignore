@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# zipapp build artifact (single-file executable named `tick` at repo root)
+/tick
+*.pyz
+
+# tick's own ledger worktree, created by dogfooding `tick init`
+/.tick
+.tick.lock
