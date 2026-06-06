@@ -2,7 +2,9 @@ name: release
 
 # Triggered by `scripts/release.py` pushing a `vX.Y.Z` tag. Builds the single-file
 # `tick` zipapp and publishes it as a release asset, so the README's
-# `releases/latest/download/tick` curl URL resolves.
+# `releases/latest/download/tick` curl URL resolves. Also publishes an
+# `update.json` manifest (version + sha256) that `tick update` and the in-CLI
+# update nag read from `releases/latest/download/update.json`.
 on:
   push:
     tags:
@@ -34,7 +36,23 @@ jobs:
       - name: Build the zipapp
         run: python build.py dist/tick
 
+      - name: Generate the update manifest
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          payload = pathlib.Path("dist/tick").read_bytes()
+          repo = os.environ["GITHUB_REPOSITORY"]
+          manifest = {
+              "latest_version": version,
+              "sha256": hashlib.sha256(payload).hexdigest(),
+              "script_url": f"https://github.com/{repo}/releases/latest/download/tick",
+          }
+          pathlib.Path("dist/update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/tick --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/tick dist/update.json --generate-notes

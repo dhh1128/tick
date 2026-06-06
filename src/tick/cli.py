@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from tick import __version__
 from tick import core
 from tick import store
+from tick import update
 
 
 def _strip(id: str) -> str:
@@ -148,6 +151,32 @@ def cmd_orphans(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    manifest = args.manifest or update.DEFAULT_MANIFEST_URL
+    try:
+        if args.check:
+            st = update.check_update(manifest)
+        else:
+            target = Path(args.target).resolve() if args.target else update.resolve_target(sys.argv[0])
+            st = update.apply_update(target=target, manifest=manifest)
+    except update.UpdateError as e:
+        print(f"tick: {e}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        # network unreachable / 404 / malformed manifest — report, don't traceback.
+        print(f"tick: could not reach the update server ({e}); "
+              f"see {update.RELEASES_PAGE}", file=sys.stderr)
+        return 1
+    if st.update_available:
+        if args.check:
+            print(f"A newer tick is available: {st.current_version} -> {st.latest_version}. Run: tick update")
+        else:
+            print(f"updated tick: {st.current_version} -> {st.latest_version}")
+    else:
+        print(f"tick is current: {st.current_version}")
+    return 0
+
+
 def cmd_sync(args) -> int:
     st = store.resolve()
     store.sync(st)
@@ -164,6 +193,12 @@ def cmd_link(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tick", description=__doc__)
+    p.add_argument("--version", action="version", version=f"tick {__version__}")
+    p.add_argument(
+        "--no-update-check", action="store_true",
+        help="skip the once-a-day check for a newer tick release "
+             "(also via TICK_NO_UPDATE_CHECK=1)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("init", help="set up the tick ledger in this repo")
@@ -220,6 +255,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_refs)
 
     sub.add_parser("orphans", help="lint marks vs ticks").set_defaults(func=cmd_orphans)
+
+    sp = sub.add_parser("update", help="update tick to the latest release")
+    sp.add_argument("--check", action="store_true", help="only report whether an update is available")
+    sp.add_argument("--target", help=argparse.SUPPRESS)      # override the binary path (testing/advanced)
+    sp.add_argument("--manifest", help=argparse.SUPPRESS)    # override the manifest URL/path (testing/advanced)
+    sp.set_defaults(func=cmd_update)
+
     sub.add_parser("sync", help="pull --rebase then push the tick branch").set_defaults(func=cmd_sync)
     sub.add_parser("link", help="add a .tick symlink in this worktree").set_defaults(func=cmd_link)
 
@@ -229,10 +271,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        rc = args.func(args)
     except store.TickError as e:
         print(f"tick: {e}", file=sys.stderr)
         return 1
+    # pip-style nag: only on read commands, throttled + offline-safe (see update.py).
+    try:
+        update.maybe_notify_update(args.cmd, no_check=args.no_update_check)
+    except Exception:
+        pass
+    return rc
 
 
 if __name__ == "__main__":

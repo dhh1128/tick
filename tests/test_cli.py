@@ -2,11 +2,46 @@
 
 import re
 import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
+import tick
 from tick import cli
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _pyproject_version() -> str:
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    return data["project"]["version"]
+
+
+def test_version_is_single_source_of_truth():
+    # __version__ must track pyproject.toml — they had drifted (0.1.0 vs 1.0.1).
+    assert tick.__version__ == _pyproject_version()
+
+
+def test_cli_version_flag(capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--version"])
+    assert e.value.code == 0
+    out = capsys.readouterr().out.strip()
+    assert out == f"tick {tick.__version__}"
+    assert re.match(r"^tick \d+\.\d+\.\d+", out)
+
+
+def test_built_zipapp_reports_pyproject_version(tmp_path):
+    # build.py must bake the real version into the zipapp, which has no package
+    # metadata for importlib.metadata to read at runtime.
+    out = tmp_path / "tick"
+    subprocess.run([sys.executable, "build.py", str(out)], cwd=REPO_ROOT, check=True,
+                   capture_output=True, text=True)
+    res = subprocess.run([sys.executable, str(out), "--version"], capture_output=True, text=True)
+    assert res.returncode == 0
+    assert res.stdout.strip() == f"tick {_pyproject_version()}"
 
 
 def _git(args, cwd):
@@ -104,6 +139,25 @@ def test_cli_mark(repo, monkeypatch, capsys):
     # malformed FILE:LINE -> usage error, exit 1
     assert cli.main(["mark", tid, "x.py"]) == 1
     assert "FILE:LINE" in capsys.readouterr().err
+
+
+def test_cli_update_check_reports_status(tmp_path, capsys):
+    import json
+    manifest = tmp_path / "update.json"
+    manifest.write_text(json.dumps({"latest_version": "999.0.0", "sha256": "x"}))
+    assert cli.main(["update", "--check", "--manifest", str(manifest)]) == 0
+    out = capsys.readouterr().out
+    assert "999.0.0" in out and "tick update" in out
+
+    manifest.write_text(json.dumps({"latest_version": "0.0.1", "sha256": "x"}))
+    assert cli.main(["update", "--check", "--manifest", str(manifest)]) == 0
+    assert "current" in capsys.readouterr().out.lower()
+
+
+def test_cli_update_unreachable_manifest_is_graceful(tmp_path, capsys):
+    # missing/unreachable manifest -> friendly error + exit 1, never a traceback
+    assert cli.main(["update", "--check", "--manifest", str(tmp_path / "nope.json")]) == 1
+    assert "update server" in capsys.readouterr().err
 
 
 def test_cli_uninitialized_errors(repo, monkeypatch, capsys):

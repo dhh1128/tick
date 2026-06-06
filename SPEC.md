@@ -254,6 +254,8 @@ Timestamps come from an **injectable UTC clock** (see §9) so tests are determin
 | `tick orphans` | Lint: marks in code with no tick file; **open** ticks with no mark in code. |
 | `tick sync` | `git pull --rebase` then `git push` the `tick` branch to its remote. |
 | `tick link` | Add the gitignored `.tick` symlink to the current worktree (for extra worktrees). |
+| `tick --version` | Print `tick <X.Y.Z>`. Version is single-sourced from `pyproject.toml` (baked into the zipapp at build time, since a zipapp has no package metadata). |
+| `tick update [--check]` | Self-update from GitHub Releases: read `update.json` (`latest_version`, `sha256`), download the zipapp, verify the sha256, and atomically replace the running binary. `--check` reports only. Offline/unreachable → clear error, exit 1, no partial write. |
 
 Reads (`ls`, `show`, `grep`, `refs`, `orphans`) make **no** network calls.
 
@@ -372,6 +374,16 @@ zipapp is the primary artifact.
   (`ls`/`grep`/`orphans` open-ticks) now print the *bare* id** so the copy-paste token needs no sigil
   at all; the `~` prefix is shown only where the string is a literal code mark (`add`'s "paste this",
   `mark`, `off` warnings, `orphans` marks-in-code).
+- **Versioning & self-update** (added after v1.0.1): `tick --version` reports a version single-sourced
+  from `pyproject.toml` — `build.py` bakes it into the zipapp's `__init__.py`, since a zipapp has no
+  package metadata for `importlib.metadata` (the in-tree `__version__` had silently drifted, `0.1.0` vs
+  `1.0.1`, before this). `tick update` self-updates from GitHub Releases via an `update.json` manifest
+  (`latest_version` + `sha256`), verifying the hash before an atomic self-replace; the `release` workflow
+  publishes the manifest beside the `tick` asset. A pip-style **nag** prints a one-line "newer version"
+  notice, but — unlike agentprep, which checks on every run of several commands — tick checks **only on
+  `tick ls`**, **at most once a day** (cached in `$XDG_STATE_HOME/tick/`), with all network failures
+  swallowed, so the offline-first instant-write budget (§3.5) is preserved. Opt out via
+  `TICK_NO_UPDATE_CHECK=1` or `--no-update-check`.
 - **Global, not per-branch** (forking the backlog rejected).
 - **Storage:** in-repo `.tick/` worktree on an orphan `tick` branch; ignored via one tracked
   `/.tick` `.gitignore` line; config-based discovery. (Sibling and `~/.local/share` alternatives

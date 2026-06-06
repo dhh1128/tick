@@ -38,6 +38,12 @@ git clone https://github.com/dhh1128/tick && cd tick
 python3 build.py && install -m 0755 dist/tick ~/.local/bin/tick   # or: pipx install .
 ```
 
+Once installed, **`tick update`** self-updates to the latest release (it verifies
+a published sha256 before replacing the binary). `tick ls` also prints a one-line
+nudge, at most once a day, when a newer version exists — silence it with
+`TICK_NO_UPDATE_CHECK=1` or `tick --no-update-check`. The check is offline-safe
+(any network failure is ignored) and never runs on the write path.
+
 ## Quickstart
 
 ```sh
@@ -105,6 +111,8 @@ mark (`tick show <id>`).
 | `tick orphans` | Lint: marks with no tick, open ticks with no mark. |
 | `tick sync` | `pull --rebase` then push the `tick` branch (mutations already auto-push in the background; `sync` pulls others' changes and flushes any offline backlog). |
 | `tick link` | Add a `.tick` symlink in an additional worktree. |
+| `tick update [--check]` | Self-update to the latest release (verifies a sha256 before replacing the binary); `--check` only reports. |
+| `tick --version` | Print the installed version. |
 
 ## How it stores things
 
