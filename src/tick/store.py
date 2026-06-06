@@ -460,6 +460,17 @@ def _comment_leader(path: Path) -> str:
     return _COMMENT_LEADERS.get(path.suffix.lower(), "#")
 
 
+# Extensions whose linters/formatters require *two* spaces before an inline
+# comment (PEP 8 / flake8 E261 / black). Everything else gets a single space —
+# what Prettier (JS/TS/CSS), gofmt, and rustfmt normalize to; two spaces there
+# makes `prettier --check` fail on every injected mark.
+_TWO_SPACE_BEFORE = {".py", ".pyi"}
+
+
+def _comment_gap(path: Path) -> str:
+    return "  " if path.suffix.lower() in _TWO_SPACE_BEFORE else " "
+
+
 def mark(store: Store, id: str, file: str, line: int) -> bool:
     """Inject the tick mark `~<id>` as a trailing comment on <file>:<line> of the
     code worktree, using a comment leader inferred from the file extension
@@ -483,7 +494,7 @@ def mark(store: Store, id: str, file: str, line: int) -> bool:
     needle = core.MARK_SIGIL + id
     if needle in text:
         return False  # idempotent — already marked here
-    lines[idx] = f"{text}  {_comment_leader(path)} {needle}{ending}"
+    lines[idx] = f"{text}{_comment_gap(path)}{_comment_leader(path)} {needle}{ending}"
     path.write_text("".join(lines))
     return True
 

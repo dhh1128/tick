@@ -185,15 +185,32 @@ def test_mark_comment_leader_by_extension_and_eof_line(repo):
     id = S.add(st, "x")
     (repo / "a.js").write_text("const x = 1;\n")
     S.mark(st, id, "a.js", 1)
-    assert (repo / "a.js").read_text() == f"const x = 1;  // ~{id}\n"      # // for JS
+    assert (repo / "a.js").read_text() == f"const x = 1; // ~{id}\n"       # // for JS, single space (prettier-clean)
 
     (repo / "b.weird").write_text("hello\n")
     S.mark(st, id, "b.weird", 1)
-    assert (repo / "b.weird").read_text() == f"hello  # ~{id}\n"           # default #
+    assert (repo / "b.weird").read_text() == f"hello # ~{id}\n"            # default #, single space
 
     (repo / "c.py").write_text("x = 1")                                    # no trailing newline
     S.mark(st, id, "c.py", 1)
-    assert (repo / "c.py").read_text() == f"x = 1  # ~{id}"
+    assert (repo / "c.py").read_text() == f"x = 1  # ~{id}"                # python keeps TWO spaces (flake8 E261 / black)
+
+
+def test_mark_spacing_is_prettier_clean_for_js_and_black_clean_for_py(repo):
+    """Mark injection must not fight downstream formatters: a single space before
+    `//` (what Prettier/gofmt/rustfmt normalize to — two there fails `prettier
+    --check`), but two spaces before `#` in Python (what flake8 E261 / black
+    require for an inline comment)."""
+    st = S.init(cwd=repo)
+    id = S.add(st, "x")
+
+    (repo / "app.ts").write_text("foo();\n")
+    S.mark(st, id, "app.ts", 1)
+    assert (repo / "app.ts").read_text() == f"foo(); // ~{id}\n"           # exactly one space before //
+
+    (repo / "mod.py").write_text("x = 1\n")
+    S.mark(st, id, "mod.py", 1)
+    assert (repo / "mod.py").read_text() == f"x = 1  # ~{id}\n"            # exactly two spaces before #
 
 
 def test_mark_errors(repo):
