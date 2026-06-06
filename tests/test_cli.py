@@ -34,7 +34,7 @@ def test_cli_full_flow(repo, monkeypatch, capsys):
 
     assert cli.main(["add", "Fix parser", "--kind", "debt", "--tag", "x"]) == 0
     out = capsys.readouterr().out
-    m = re.search(r"!([2-7][a-z2-7]{3})", out)
+    m = re.search(r"~([2-7][a-z2-7]{3})", out)
     assert m, out
     tid = m.group(1)
 
@@ -44,6 +44,9 @@ def test_cli_full_flow(repo, monkeypatch, capsys):
     assert cli.main(["ls"]) == 0
     out = capsys.readouterr().out
     assert tid in out and "Fix parser" in out
+    # listings print the bare id (no sigil) so it copy-pastes into commands
+    assert re.search(rf"^{tid}\b", out, re.M), out
+    assert f"~{tid}" not in out and f"!{tid}" not in out
 
     assert cli.main(["show", tid]) == 0
     out = capsys.readouterr().out
@@ -69,9 +72,9 @@ def test_cli_refs_and_orphans(repo, monkeypatch, capsys):
     cli.main(["init"])
     capsys.readouterr()
     cli.main(["add", "real work"])
-    tid = re.search(r"!([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)
+    tid = re.search(r"~([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)
 
-    (repo / "file.py").write_text(f"# do it here !{tid}\n# stale !2zzz\n")
+    (repo / "file.py").write_text(f"# do it here ~{tid}\n# stale ~2zzz\n")
 
     cli.main(["refs", tid])
     assert "file.py" in capsys.readouterr().out
@@ -86,12 +89,15 @@ def test_cli_mark(repo, monkeypatch, capsys):
     cli.main(["init"])
     capsys.readouterr()
     cli.main(["add", "speed up"])
-    tid = re.search(r"!([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)
+    tid = re.search(r"~([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)
     (repo / "x.py").write_text("y = 2\n")
 
     assert cli.main(["mark", tid, "x.py:1"]) == 0
-    assert f"# !{tid}" in (repo / "x.py").read_text()
-    # accepts the !-prefixed id too, and reports the no-op on a repeat
+    assert f"# ~{tid}" in (repo / "x.py").read_text()
+    # accepts a ~-prefixed id, and reports the no-op on a repeat
+    assert cli.main(["mark", f"~{tid}", "x.py:1"]) == 0
+    assert "already" in capsys.readouterr().out
+    # also tolerates the legacy !-prefixed id
     assert cli.main(["mark", f"!{tid}", "x.py:1"]) == 0
     assert "already" in capsys.readouterr().out
 

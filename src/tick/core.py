@@ -17,11 +17,16 @@ ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 ID_DIGITS = "234567"
 ID_LEN = 4
 
-# A tick mark in source code: '!' + one digit + three base32 chars, e.g. !2k3m.
+# A tick mark in source code: the sigil + one digit + three base32 chars, e.g. ~2k3m.
 # Constraining the first char to a digit is what makes the mark uniquely greppable:
-# an identifier (or numeric literal) can never start with a digit, so `!2k3m` can
-# never be the boolean negation of anything — unlike `!data`, `!user`, `!flag`, ...
-MARK_RE = re.compile(r"![2-7][a-z2-7]{3}")
+# an identifier (or numeric literal) can never start with a digit, so `~2k3m` can
+# never be a unary-operator application to anything — unlike `~data`, `!user`, ...
+# The sigil is `~` (not `!`): `!` triggers shell history expansion, so a copy-pasted
+# `tick show !2k3m` dies in interactive bash before tick ever runs; `~2k3m` survives
+# because tilde expansion only fires for a real login name, which a digit-first id
+# never is. `~` also never collides with a comment leader (unlike `//`/`#`).
+MARK_SIGIL = "~"
+MARK_RE = re.compile(rf"{re.escape(MARK_SIGIL)}[2-7][a-z2-7]{{3}}")
 _ID_RE = re.compile(r"^[2-7][a-z2-7]{3}$")
 
 VALID_KINDS = ("todo", "debt", "idea")
@@ -50,8 +55,8 @@ def generate_id(existing=(), rng=None) -> str:
 
 
 def extract_marks(text: str) -> list[str]:
-    """Return the ids (without the leading '!') of every tick mark in `text`."""
-    return [m.group(0)[1:] for m in MARK_RE.finditer(text)]
+    """Return the ids (without the leading sigil) of every tick mark in `text`."""
+    return [m.group(0)[len(MARK_SIGIL):] for m in MARK_RE.finditer(text)]
 
 
 # -------------------------------------------------------------------- timestamps

@@ -10,7 +10,9 @@ from tick import store
 
 
 def _strip(id: str) -> str:
-    return id.removeprefix("!")
+    """Accept an id with or without a leading sigil. Tolerates the legacy `!`
+    so old marks copy-pasted from code still resolve."""
+    return id[1:] if id[:1] in (core.MARK_SIGIL + "!") else id
 
 
 def cmd_init(args) -> int:
@@ -26,15 +28,15 @@ def cmd_init(args) -> int:
 def cmd_add(args) -> int:
     st = store.resolve()
     id = store.add(st, args.title, kind=args.kind, tags=args.tags)
-    print(f"!{id}  {args.title}")
-    print(f"paste the mark  !{id}  wherever this work lives in the code")
+    print(f"{id}  {args.title}")
+    print(f"paste the mark  {core.MARK_SIGIL}{id}  wherever this work lives in the code")
     return 0
 
 
 def cmd_note(args) -> int:
     st = store.resolve()
     store.note(st, _strip(args.id), args.text)
-    print(f"noted on !{_strip(args.id)}")
+    print(f"noted on {_strip(args.id)}")
     return 0
 
 
@@ -53,7 +55,8 @@ def cmd_mark(args) -> int:
         print("tick: expected FILE:LINE (e.g. src/foo.py:42)", file=sys.stderr)
         return 1
     added = store.mark(st, id, file, int(line_s))
-    print(f"marked {file}:{line_s} with !{id}" if added else f"!{id} already at {file}:{line_s}")
+    sig = core.MARK_SIGIL
+    print(f"marked {file}:{line_s} with {sig}{id}" if added else f"{sig}{id} already at {file}:{line_s}")
     return 0
 
 
@@ -61,9 +64,9 @@ def cmd_off(args) -> int:
     st = store.resolve()
     id = _strip(args.id)
     sites = store.off(st, id)
-    print(f"ticked off !{id}")
+    print(f"ticked off {id}")
     if sites:
-        print(f"warning: !{id} is still referenced in the code — remove the mark:")
+        print(f"warning: {core.MARK_SIGIL}{id} is still referenced in the code — remove the mark:")
         for path, lineno, line in sites:
             print(f"  {path}:{lineno}: {line}")
     return 0
@@ -72,7 +75,7 @@ def cmd_off(args) -> int:
 def cmd_reopen(args) -> int:
     st = store.resolve()
     store.reopen(st, _strip(args.id))
-    print(f"reopened !{_strip(args.id)}")
+    print(f"reopened {_strip(args.id)}")
     return 0
 
 
@@ -90,7 +93,7 @@ def cmd_ls(args) -> int:
         return 0
     for t in ticks:
         suffix = "  (closed)" if not t.is_open else ""
-        print(f"!{t.id}  {t.kind:5}  {t.title}{suffix}")
+        print(f"{t.id}  {t.kind:5}  {t.title}{suffix}")
     pending = store.unpushed_count(st)
     if pending:
         print(
@@ -114,7 +117,7 @@ def cmd_grep(args) -> int:
         print("(no matches)")
         return 0
     for t in hits:
-        print(f"!{t.id}  {t.title}")
+        print(f"{t.id}  {t.title}")
     return 0
 
 
@@ -134,12 +137,12 @@ def cmd_orphans(args) -> int:
     marks_without_tick, open_without_mark = store.orphans(st)
     print("marks in code with no tick file:")
     for m in sorted(marks_without_tick):
-        print(f"  !{m}")
+        print(f"  {core.MARK_SIGIL}{m}")  # a literal mark sitting in the code
     if not marks_without_tick:
         print("  (none)")
     print("open ticks with no mark in code:")
     for m in sorted(open_without_mark):
-        print(f"  !{m}")
+        print(f"  {m}")  # a tick id you'd act on — bare, copy-pastes into commands
     if not open_without_mark:
         print("  (none)")
     return 0

@@ -44,21 +44,21 @@ python3 build.py && install -m 0755 dist/tick ~/.local/bin/tick   # or: pipx ins
 cd your-repo
 tick init                         # creates the orphan `tick` branch + .tick/ worktree
 tick add "Speed up the lexer" --kind debt --tag parser
-#  -> !4mz3  Speed up the lexer
-#     paste the mark  !4mz3  wherever this work lives in the code
+#  -> ~4mz3  Speed up the lexer
+#     paste the mark  ~4mz3  wherever this work lives in the code
 ```
 
 Drop the mark in a comment at the relevant spot:
 
 ```python
-def tokenize(src):  # !4mz3 quadratic on long inputs
+def tokenize(src):  # ~4mz3 quadratic on long inputs
     ...
 ```
 
 …or let tick inject it for you (comment style inferred from the extension):
 
 ```sh
-tick mark 4mz3 src/lexer.py:12     # appends `# !4mz3` to that line
+tick mark 4mz3 src/lexer.py:12     # appends `# ~4mz3` to that line
 ```
 
 Then:
@@ -72,13 +72,17 @@ tick off 4mz3           # close it (warns if the mark is still in the code)
 
 ### The mark
 
-A **tick mark** is `!` + a 4-char id whose first char is a digit, e.g. `!4mz3`.
-The digit-first rule means it can never collide with boolean negation
-(`!data`, `!flag`, …), so it's uniquely greppable:
+A **tick mark** is `~` + a 4-char id whose first char is a digit, e.g. `~4mz3`.
+The digit-first rule means it can never collide with a unary operator applied to
+an identifier (`~mask`, `!data`, …), so it's uniquely greppable:
 
 ```sh
-rg '![2-7][a-z2-7]{3}'   # find every tick mark in the code
+rg '~[2-7][a-z2-7]{3}'   # find every tick mark in the code
 ```
+
+The sigil is `~`, not `!`: a leading `!` triggers bash history expansion, so a
+copy-pasted `tick show !4mz3` would die with `event not found` before `tick`
+ever runs. `~4mz3` is safe to type unquoted.
 
 The id is the durable join key — `tick` files never cite line numbers, so they
 don't rot. Find a tick's code from its id (`tick refs <id>`); find a tick from a

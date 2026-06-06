@@ -127,9 +127,9 @@ def test_edit_commits_changes(repo, tmp_path):
 def test_refs_and_orphans(repo):
     st = S.init(cwd=repo)
     id = S.add(st, "real work")
-    (repo / "file.py").write_text(f"# do the work here !{id}\n# stale ref !2zzz\n")
+    (repo / "file.py").write_text(f"# do the work here ~{id}\n# stale ref ~2zzz\n")
     sites = S.refs(st, id)
-    assert any(f"!{id}" in line for _, _, line in sites)
+    assert any(f"~{id}" in line for _, _, line in sites)
     marks_without_tick, open_without_mark = S.orphans(st)
     assert "2zzz" in marks_without_tick      # mark in code, no tick file
     assert id not in open_without_mark        # open tick that DOES have a mark
@@ -141,9 +141,9 @@ def test_mark_injects_trailing_comment_and_is_idempotent(repo):
     (repo / "mod.py").write_text("def f():\n    return 1\n")
 
     assert S.mark(st, id, "mod.py", 1) is True
-    assert (repo / "mod.py").read_text() == f"def f():  # !{id}\n    return 1\n"
+    assert (repo / "mod.py").read_text() == f"def f():  # ~{id}\n    return 1\n"
     assert S.mark(st, id, "mod.py", 1) is False                     # already there -> no-op
-    assert (repo / "mod.py").read_text().count(f"!{id}") == 1
+    assert (repo / "mod.py").read_text().count(f"~{id}") == 1
     assert any(p == "mod.py" for p, _, _ in S.refs(st, id))         # now discoverable
 
 
@@ -152,15 +152,15 @@ def test_mark_comment_leader_by_extension_and_eof_line(repo):
     id = S.add(st, "x")
     (repo / "a.js").write_text("const x = 1;\n")
     S.mark(st, id, "a.js", 1)
-    assert (repo / "a.js").read_text() == f"const x = 1;  // !{id}\n"      # // for JS
+    assert (repo / "a.js").read_text() == f"const x = 1;  // ~{id}\n"      # // for JS
 
     (repo / "b.weird").write_text("hello\n")
     S.mark(st, id, "b.weird", 1)
-    assert (repo / "b.weird").read_text() == f"hello  # !{id}\n"           # default #
+    assert (repo / "b.weird").read_text() == f"hello  # ~{id}\n"           # default #
 
     (repo / "c.py").write_text("x = 1")                                    # no trailing newline
     S.mark(st, id, "c.py", 1)
-    assert (repo / "c.py").read_text() == f"x = 1  # !{id}"
+    assert (repo / "c.py").read_text() == f"x = 1  # ~{id}"
 
 
 def test_mark_errors(repo):
@@ -181,12 +181,12 @@ def test_code_scan_honors_gitignore_and_size_cap(repo):
     st = S.init(cwd=repo)
     id = S.add(st, "real work")
 
-    (repo / "file.py").write_text(f"# do the work here !{id}\n")          # tracked -> scanned
+    (repo / "file.py").write_text(f"# do the work here ~{id}\n")          # tracked -> scanned
     with open(repo / ".gitignore", "a") as f:
         f.write("build/\n")
     (repo / "build").mkdir()
-    (repo / "build" / "gen.py").write_text(f"# generated, ignored !{id}\n")  # gitignored -> skipped
-    (repo / "big.bin").write_text("x" * (S.MAX_SCAN_BYTES + 1) + f"\n!{id}\n")  # too big -> skipped
+    (repo / "build" / "gen.py").write_text(f"# generated, ignored ~{id}\n")  # gitignored -> skipped
+    (repo / "big.bin").write_text("x" * (S.MAX_SCAN_BYTES + 1) + f"\n~{id}\n")  # too big -> skipped
 
     paths = {p for p, _, _ in S.refs(st, id)}
     assert "file.py" in paths

@@ -10,7 +10,7 @@ critical section behind an exclusive flock.
 from __future__ import annotations
 
 import contextlib
-import fcntl  # !55ez POSIX-only locking; Windows has no fcntl
+import fcntl  # ~55ez POSIX-only locking; Windows has no fcntl
 import os
 import shlex
 import subprocess
@@ -420,8 +420,8 @@ def _iter_code_files(store: Store):
 
 
 def refs(store: Store, id: str):
-    """Return [(relpath, lineno, line)] in the code worktree mentioning !id."""
-    needle = "!" + id
+    """Return [(relpath, lineno, line)] in the code worktree mentioning ~id."""
+    needle = core.MARK_SIGIL + id
     out = []
     for path in _iter_code_files(store):
         try:
@@ -453,7 +453,7 @@ def _comment_leader(path: Path) -> str:
 
 
 def mark(store: Store, id: str, file: str, line: int) -> bool:
-    """Inject the tick mark `!<id>` as a trailing comment on <file>:<line> of the
+    """Inject the tick mark `~<id>` as a trailing comment on <file>:<line> of the
     code worktree, using a comment leader inferred from the file extension
     (default `#`). Returns True if added, False if the mark was already on that
     line. Edits the working tree only — no commit and no store lock, since the
@@ -472,7 +472,7 @@ def mark(store: Store, id: str, file: str, line: int) -> bool:
     raw = lines[idx]
     text = raw.rstrip("\r\n")
     ending = raw[len(text):]  # preserve the original line ending ("", "\n", "\r\n")
-    needle = "!" + id
+    needle = core.MARK_SIGIL + id
     if needle in text:
         return False  # idempotent — already marked here
     lines[idx] = f"{text}  {_comment_leader(path)} {needle}{ending}"

@@ -44,16 +44,18 @@ def test_id_generation_retries_on_collision():
 
 
 def test_mark_regex_matches_and_rejects():
-    assert core.extract_marks("see !2k3m here") == ["2k3m"]
-    assert core.extract_marks("!7qax") == ["7qax"]
-    for s in ["!data", "!user", "!name", "!flag", "!=", "!a", "!2k3"]:
+    assert core.extract_marks("see ~2k3m here") == ["2k3m"]
+    assert core.extract_marks("~7qax") == ["7qax"]
+    for s in ["~data", "~user", "~name", "~flag", "~/path", "~a", "~2k3"]:
         assert core.extract_marks(s) == [], s
     # matches only the first 4 chars of a longer run
-    assert core.extract_marks("!2k3mz") == ["2k3m"]
+    assert core.extract_marks("~2k3mz") == ["2k3m"]
+    # the old '!' sigil is no longer a mark
+    assert core.extract_marks("!2k3m") == []
 
 
 def test_extract_multiple_marks():
-    text = "// fix !2k3m and !7qax\n# later !4zzz"
+    text = "// fix ~2k3m and ~7qax\n# later ~4zzz"
     assert core.extract_marks(text) == ["2k3m", "7qax", "4zzz"]
 
 

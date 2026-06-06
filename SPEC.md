@@ -50,7 +50,7 @@ The bridge: when a tick turns out to be a real design decision, `tick off` is th
 ## 2. Vocabulary
 
 - **a tick** — one ledger item (a to-do / debt / idea about the code).
-- **tick mark** — the in-source reference `!<id>` (e.g. `!2k3m`) that pins a tick to a code location.
+- **tick mark** — the in-source reference `~<id>` (e.g. `~2k3m`) that pins a tick to a code location.
 - **id** — a 4-character base32 identifier whose **first character is a digit** (see §5).
 - **tick off** — to complete a tick.
 
@@ -105,7 +105,7 @@ stable primary clone.
 - **Grep reality (corrected from an earlier draft):** because `.tick/` is gitignored, `rg`/`grep`
   **skip it by default**. That's fine — the *marks* are what you grep for, and they live in source
   regardless of where the store sits:
-  - **Marks** → `rg '![2-7][a-z2-7]{3}'` over the code, always works.
+  - **Marks** → `rg '~[2-7][a-z2-7]{3}'` over the code, always works.
   - **Tick bodies** → `tick grep <text>` (the tool greps the store wherever it is); raw
     `rg --no-ignore .tick/` also works but isn't the path.
   So store location is essentially grep-neutral; it's chosen for invisibility, not greppability.
@@ -179,21 +179,31 @@ directory). Push/pull is only for **other machines** and backup.
 
 ### 5.2 The mark and why the first char is a digit
 
-The in-source mark is `!` + id, e.g. `!2k3m`. The **digit-first** rule is what makes the mark uniquely
+The in-source mark is `~` + id, e.g. `~2k3m`. The **digit-first** rule is what makes the mark uniquely
 greppable:
 
-- Naive `![a-z2-7]{4}` collides catastrophically with boolean negation of 4-letter identifiers —
-  `!data`, `!user`, `!name`, `!flag`, `!resp` are everywhere in C-family code.
-- But an identifier (and a numeric literal) can **never start with a digit**, so `!2k3m` cannot be the
-  negation of anything — `!2k3m` simply does not parse as code in any mainstream language.
+- A naive `<sigil>[a-z2-7]{4}` collides catastrophically with unary operators applied to 4-letter
+  identifiers — `~mask`, `!data`, `!user`, `!flag` are everywhere in C-family code.
+- But an identifier (and a numeric literal) can **never start with a digit**, so `~2k3m` cannot be a
+  unary operator applied to anything — `~2k3m` simply does not parse as code in any mainstream language.
 
-Canonical grep: `rg '![2-7][a-z2-7]{3}'` — effectively false-positive-free.
+Canonical grep: `rg '~[2-7][a-z2-7]{3}'` — effectively false-positive-free.
+
+**Why `~` and not `!` (resolves the `tick show` footgun):** the sigil is copy-pasted out of `ls`/`grep`/
+conversation straight into `tick show <mark>`. A leading `!` triggers **bash history expansion** in any
+interactive shell — `tick show !2k3m` dies with `event not found` *before tick runs*, and even
+double-quotes don't save it. `~` is immune: tilde expansion only fires for a real login name, and a
+digit-first id can never be one, so bash passes `~2k3m` through verbatim unquoted. `~` also keeps the
+single-keystroke ergonomics and never collides with a comment leader the way `//` or `#` would (the mark
+is injected *after* a leader, e.g. `// ~2k3m`). Its only mild edge — GFM `~~strikethrough~~` — needs two
+adjacent tildes, which space-separated marks never produce.
 
 ### 5.3 Marks are type-agnostic
 
 The mark carries only the id. Whether a tick is a todo, debt, or idea is a field **inside** the file —
-one sigil to remember. The `!` lives only in source and in conversation; it is **never** part of a
-filename (a leading `!` in a filename is a shell/history-expansion hazard). The file is `<id>.md`.
+one sigil to remember. The `~` lives only in source and in conversation; it is **never** part of a
+filename. The file is `<id>.md`. (The same reasoning rules out `!` for the sigil itself, not just for
+filenames — see §5.2.)
 
 ---
 
@@ -231,16 +241,16 @@ Timestamps come from an **injectable UTC clock** (see §9) so tests are determin
 | Command | Behavior |
 | --- | --- |
 | `tick init [--remote <name>] [--store <path>]` | Create the orphan `tick` branch + `.tick/` worktree, record `tick.worktree`/`tick.remote`/`tick.branch`, add the `/.tick` `.gitignore` line (one commit), create the `.tick` symlink, and (with confirmation) install the pre-push guard. Idempotent. |
-| `tick add "<title>" [--kind K] [--tag T]...` | Mint an id, write `<id>.md`, commit. **Prints the mark `!<id>`** to paste into code. |
-| `tick mark <id> <file:line>` | Inject the mark `!<id>` as a trailing comment at `file:line` (comment leader inferred from the extension, default `#`). Edits code only — no commit, no store lock; idempotent. |
+| `tick add "<title>" [--kind K] [--tag T]...` | Mint an id, write `<id>.md`, commit. **Prints the mark `~<id>`** to paste into code. |
+| `tick mark <id> <file:line>` | Inject the mark `~<id>` as a trailing comment at `file:line` (comment leader inferred from the extension, default `#`). Edits code only — no commit, no store lock; idempotent. |
 | `tick note <id> "<text>"` | Append a dated note, commit. |
 | `tick edit <id>` | Open the tick in `$EDITOR`; on save, commit. For correcting/rewriting anything. |
-| `tick off <id>` | Set `closed: <now>`, commit. Then `grep` the code worktree for `!<id>` and **warn**, listing any sites where the mark is still embedded. |
+| `tick off <id>` | Set `closed: <now>`, commit. Then `grep` the code worktree for `~<id>` and **warn**, listing any sites where the mark is still embedded. |
 | `tick reopen <id>` | Remove `closed:`, commit. |
-| `tick ls [--all] [--closed] [--kind K] [--tag T]` | List ticks (open by default): `!<id>  <kind>  <title>`. |
-| `tick show <id>` | Print the tick file. |
-| `tick grep <text>` | Search tick bodies/titles in the store; print matching `!<id> <title>` + lines. |
-| `tick refs <id>` | `grep` the code worktree for `!<id>`; list `file:line` sites. |
+| `tick ls [--all] [--closed] [--kind K] [--tag T]` | List ticks (open by default): `<id>  <kind>  <title>` — **bare id**, no sigil, so it copy-pastes straight into `tick show`. |
+| `tick show <id>` | Print the tick file. Accepts the id bare or sigil-prefixed (`~<id>`; legacy `!<id>` also tolerated). |
+| `tick grep <text>` | Search tick bodies/titles in the store; print matching `<id> <title>` (bare id) + lines. |
+| `tick refs <id>` | `grep` the code worktree for `~<id>`; list `file:line` sites. |
 | `tick orphans` | Lint: marks in code with no tick file; **open** ticks with no mark in code. |
 | `tick sync` | `git pull --rebase` then `git push` the `tick` branch to its remote. |
 | `tick link` | Add the gitignored `.tick` symlink to the current worktree (for extra worktrees). |
@@ -253,7 +263,7 @@ Reads (`ls`, `show`, `grep`, `refs`, `orphans`) make **no** network calls.
 
 - **Reads are plain files.** Agents use their native Read/Grep — no MCP, no network (pressures 1 & 2).
 - **Target repos get an `AGENTS.md` / `CLAUDE.md` stanza**, roughly:
-  > This repo uses `tick` for task tracking. Before editing a file, `rg '![2-7][a-z2-7]{3}' <file>` for
+  > This repo uses `tick` for task tracking. Before editing a file, `rg '~[2-7][a-z2-7]{3}' <file>` for
   > tick marks and read each referenced tick with `tick show <id>`. To search existing ticks, use
   > `tick grep <text>`. When your change resolves a tick, `tick off <id>` and delete the mark. To
   > capture new work, `tick add "<title>"`.
@@ -299,8 +309,8 @@ zipapp is the primary artifact.
 **Pure core (no git):**
 1. id format: 4 chars, charset `[a-z2-7]`, **first char ∈ `[2-7]`**.
 2. id generation retries on collision against a supplied set; never returns a dup.
-3. mark regex **matches** `!2k3m`, `!7qax`; **rejects** `!data`, `!user`, `!name`, `!flag`, `!=`,
-   `!a`, `!2k3` (too short); `!2k3mz` matches only the first 4 (`!2k3m`).
+3. mark regex **matches** `~2k3m`, `~7qax`; **rejects** `~data`, `~user`, `~name`, `~flag`, `~/path`,
+   `~a`, `~2k3` (too short), and the legacy `!2k3m`; `~2k3mz` matches only the first 4 (`~2k3m`).
 4. extract all marks from a blob of source text (multiple per line, in comments).
 5. tick parse/serialize round-trips title + kind + tags + created + closed + body + notes.
 6. timestamp formatting: injected clock → `YYYY-MM-DDThh:mmZ` (UTC, minute precision).
@@ -314,7 +324,7 @@ zipapp is the primary artifact.
 **Store / integration (temp git repo):**
 10. `init` creates the orphan `tick` branch + `.tick/` worktree, records config, adds the `/.tick`
     `.gitignore` line in exactly one code-branch commit, is idempotent.
-11. `add` writes `<id>.md` and produces exactly one commit on `tick`; prints `!<id>`.
+11. `add` writes `<id>.md` and produces exactly one commit on `tick`; prints `~<id>`.
 12. `note` / `edit` / `off` each produce one commit and the expected file change.
 13. the flock critical section serializes two concurrent `add`s (no index corruption, both ticks land,
     distinct ids).
@@ -338,7 +348,7 @@ zipapp is the primary artifact.
 
 | Risk | Mitigation |
 | --- | --- |
-| Orphaned marks (`!id` left after close) | `tick off` warns + lists sites; `tick orphans` lints both directions. |
+| Orphaned marks (`~id` left after close) | `tick off` warns + lists sites; `tick orphans` lints both directions. |
 | Line-number rot in tick→code refs | The id is the durable anchor; tick files say "search the mark," never cite line numbers. |
 | Multi-machine drift | One-file-per-tick + `tick sync` (pull --rebase); conflicts are rare and per-file. |
 | `.tick/` descended into by non-gitignore-respecting tools (`find`, some linters) | Markdown-only content; gitignore-respecting tools skip it; same exposure as your existing `.claude/worktrees/`. |
@@ -350,7 +360,18 @@ zipapp is the primary artifact.
 
 ## 13. Decisions log (resolved during design)
 
-- **Name:** `tick`; item = "a tick"; mark = "tick mark" `!<id>`; completion = `tick off`.
+- **Name:** `tick`; item = "a tick"; mark = "tick mark" `~<id>`; completion = `tick off`.
+- **Mark sigil is `~`, not `!`** (changed after v1.0.1): the displayed/marked id is routinely
+  copy-pasted into `tick show <mark>`, and a leading `!` triggers bash **history expansion** —
+  `tick show !2k3m` dies with `event not found` before tick runs (even inside double quotes). `~`
+  survives unquoted because tilde expansion only fires for a real login name, which a digit-first id
+  never is. Rejected alternatives: `//` (two chars, breaks "one sigil", clashes with the comment
+  leader tick injects after, and collides with URLs/comments in grep) and `@` (handles like `@2pac`
+  are real grep false positives). The single sigil lives behind `core.MARK_SIGIL`; id-taking commands
+  still accept a leading `!` for one release so legacy marks in old code keep resolving. **Listings
+  (`ls`/`grep`/`orphans` open-ticks) now print the *bare* id** so the copy-paste token needs no sigil
+  at all; the `~` prefix is shown only where the string is a literal code mark (`add`'s "paste this",
+  `mark`, `off` warnings, `orphans` marks-in-code).
 - **Global, not per-branch** (forking the backlog rejected).
 - **Storage:** in-repo `.tick/` worktree on an orphan `tick` branch; ignored via one tracked
   `/.tick` `.gitignore` line; config-based discovery. (Sibling and `~/.local/share` alternatives
