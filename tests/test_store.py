@@ -249,6 +249,46 @@ def test_unpushed_count_tracks_backlog(repo, tmp_path):
     assert S.unpushed_count(st2) == 1
 
 
+def test_sync_round_trips_through_a_real_remote(repo, tmp_path):
+    """`tick sync` pushes the ledger and `pull --rebase`s a second machine's
+    commits back, reconciling divergence without conflict (one file per tick).
+    Exercises the real ls-remote -> pull --rebase -> push path."""
+    bare = _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)   # drive pushes through sync only
+    st = S.resolve(cwd=repo)
+
+    S.add(st, "a")
+    S.sync(st)                                          # remote empty -> just pushes the branch
+
+    # A second machine adds a tick straight to the remote's ledger branch.
+    other = tmp_path / "other"
+    _git(["clone", "--branch", "tick", str(bare), str(other)], tmp_path)
+    _git(["config", "user.email", "o@example.com"], other)
+    _git(["config", "user.name", "Other"], other)
+    (other / "2aaa.md").write_text("# from another machine\nkind: todo\ncreated: 2026-01-01T00:00Z\n")
+    _git(["add", "-A"], other)
+    _git(["commit", "-m", "other: add 2aaa"], other)
+    _git(["push", "origin", "tick"], other)
+
+    bid = S.add(st, "b")                                # local commit while the remote is ahead
+    S.sync(st)                                          # pull --rebase reconciles, then pushes
+
+    local = {p.name for p in st.worktree.glob("*.md")}
+    assert f"{bid}.md" in local and "2aaa.md" in local  # both ours (rebased) and theirs
+
+    check = tmp_path / "check"
+    _git(["clone", "--branch", "tick", str(bare), str(check)], tmp_path)
+    remote = {p.name for p in check.glob("*.md")}
+    assert {f"{bid}.md", "2aaa.md"} <= remote            # remote received our push too
+
+
+def test_sync_without_remote_errors(repo):
+    st = S.init(cwd=repo)                                # base fixture has no remote
+    with pytest.raises(S.TickError, match="no remote"):
+        S.sync(st)
+
+
 def test_pre_push_guard_chains_real_hook(repo, tmp_path):
     st = S.init(cwd=repo)
     # Pretend the repo already had a heavy pre-push hook.
