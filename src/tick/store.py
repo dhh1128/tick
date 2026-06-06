@@ -390,12 +390,33 @@ def edit(store: Store, id: str, editor=None) -> bool:
 # ------------------------------------------------------------------- code scan
 
 
+MAX_SCAN_BYTES = 1 << 20  # 1 MiB — marks live in source lines; never read big/generated blobs
+
+
 def _iter_code_files(store: Store):
-    skip = {".git", ".tick", "__pycache__", ".pytest_cache"}
-    for root, dirs, files in os.walk(store.code_root):
-        dirs[:] = [d for d in dirs if d not in skip]
-        for fn in files:
-            yield Path(root) / fn
+    """Yield code-worktree files to scan for marks, honoring `.gitignore` and
+    skipping oversized blobs.
+
+    `git ls-files --cached --others --exclude-standard` enumerates tracked plus
+    untracked-but-not-ignored files, so the same ignore rules that hide build
+    output and the `.tick` store keep mark-scanning bounded — no descending into
+    `node_modules/`, `dist/`, etc. A per-file size cap (`MAX_SCAN_BYTES`) skips
+    large/binary files we'd otherwise read whole (debt: the scan used to read
+    every file under the root, unbounded)."""
+    listing = git(
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        store.code_root,
+    )
+    for rel in listing.split("\0"):
+        if not rel:
+            continue
+        path = store.code_root / rel
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_SCAN_BYTES:
+                continue
+        except OSError:
+            continue
+        yield path
 
 
 def refs(store: Store, id: str):

@@ -135,6 +135,27 @@ def test_refs_and_orphans(repo):
     assert id not in open_without_mark        # open tick that DOES have a mark
 
 
+def test_code_scan_honors_gitignore_and_size_cap(repo):
+    """The mark scan skips gitignored paths and oversized files instead of
+    reading every file under the root unbounded."""
+    st = S.init(cwd=repo)
+    id = S.add(st, "real work")
+
+    (repo / "file.py").write_text(f"# do the work here !{id}\n")          # tracked -> scanned
+    with open(repo / ".gitignore", "a") as f:
+        f.write("build/\n")
+    (repo / "build").mkdir()
+    (repo / "build" / "gen.py").write_text(f"# generated, ignored !{id}\n")  # gitignored -> skipped
+    (repo / "big.bin").write_text("x" * (S.MAX_SCAN_BYTES + 1) + f"\n!{id}\n")  # too big -> skipped
+
+    paths = {p for p, _, _ in S.refs(st, id)}
+    assert "file.py" in paths
+    assert not any(p.startswith("build") for p in paths)
+    assert "big.bin" not in paths
+    # the only mark the scan should surface is the one in the tracked, in-size file
+    assert id in S.all_marks_in_code(st)
+
+
 def test_grep(repo):
     st = S.init(cwd=repo)
     a = S.add(st, "Fix parser")
