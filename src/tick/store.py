@@ -186,11 +186,13 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
         raise TickError("not inside a git repository")
     code_root = Path(code_root)
 
-    if _config_get("tick.worktree", cwd):
-        return resolve(cwd)  # idempotent
-
     common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
     primary_root = _primary_root(common)
+
+    if _config_get("tick.worktree", cwd):
+        _ensure_code_gitignore(primary_root)  # self-heal a half-ignored repo; no-op if already present
+        return resolve(cwd)  # idempotent
+
     store_path = Path(store_path).resolve() if store_path else (primary_root / ".tick")
 
     # Create an orphan branch from an empty root commit (no --orphan needed; robust
@@ -212,7 +214,7 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     if remote:
         _config_set("tick.remote", remote, cwd)
 
-    _ensure_code_gitignore(code_root)
+    _ensure_code_gitignore(primary_root)
 
     store = resolve(cwd)
     if install_guard:
@@ -228,9 +230,15 @@ def _detect_remote(cwd):
     return remotes[0] if remotes else None
 
 
-def _ensure_code_gitignore(code_root) -> bool:
-    """Add `/.tick` + lock to the code branch's tracked .gitignore (one commit)."""
-    gi = code_root / ".gitignore"
+def _ensure_code_gitignore(primary_root) -> bool:
+    """Add `/.tick` + lock to the primary worktree's tracked .gitignore (one commit).
+
+    Always targets the primary worktree — the ledger physically lives at
+    `<primary_root>/.tick`, so that is the only checkout whose `.gitignore` needs
+    the entry. Writing it to whatever worktree `tick init` happened to run from
+    would put it on the wrong branch (and leave the primary branch staging `.tick`
+    as an embedded-repo gitlink)."""
+    gi = primary_root / ".gitignore"
     lines = gi.read_text().splitlines() if gi.exists() else []
     already = {ln.strip() for ln in lines}
     if "/.tick" in already or ".tick" in already:
@@ -239,8 +247,8 @@ def _ensure_code_gitignore(code_root) -> bool:
         if lines and lines[-1].strip() != "":
             f.write("\n")
         f.write("/.tick\n" + LOCK_NAME + "\n")
-    git(["add", ".gitignore"], code_root)
-    git(["commit", "-s", "-m", "chore: ignore tick ledger worktree (/.tick)"], code_root)
+    git(["add", ".gitignore"], primary_root)
+    git(["commit", "-s", "-m", "chore: ignore tick ledger worktree (/.tick)"], primary_root)
     return True
 
 

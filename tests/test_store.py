@@ -88,6 +88,39 @@ def test_init_adds_gitignore_in_exactly_one_code_commit(repo):
     assert _count(repo) - before == 1  # only the /.tick .gitignore commit on the code branch
 
 
+def test_init_from_linked_worktree_ignores_tick_in_primary(repo, tmp_path):
+    """Running `tick init` from a *linked* worktree must still add `/.tick` to the
+    PRIMARY worktree's tracked .gitignore — that's where the ledger physically
+    lives (anchored on the common dir). Regression: init used to commit the ignore
+    onto the worktree it was invoked from, so when run from a feature worktree the
+    primary branch (e.g. main) never got `/.tick`, and a later `git add .` on main
+    staged `.tick` as an embedded-repo gitlink."""
+    wt = tmp_path / "feature-wt"
+    _git(["worktree", "add", "-b", "feature", str(wt)], repo)
+
+    S.init(cwd=wt)
+
+    # The store lands at the primary root regardless of where init ran.
+    assert (repo / ".tick").is_dir()
+    # ...and the ignore lands on the primary worktree, not the feature branch.
+    primary_gi = repo / ".gitignore"
+    assert primary_gi.exists() and "/.tick" in primary_gi.read_text()
+
+
+def test_reinit_self_heals_missing_gitignore(repo):
+    """A repo left half-initialized by the old linked-worktree bug (ledger present,
+    but `/.tick` missing from the primary .gitignore) is repaired by re-running
+    `tick init` — the idempotent path self-heals instead of short-circuiting."""
+    S.init(cwd=repo)
+    gi = repo / ".gitignore"
+    gi.write_text(gi.read_text().replace("/.tick\n", ""))   # simulate the damaged state
+    _git(["commit", "-am", "drop tick ignore"], repo)
+    assert "/.tick" not in gi.read_text()
+
+    S.init(cwd=repo)
+    assert "/.tick" in gi.read_text()
+
+
 def test_add_creates_file_and_one_tick_commit(repo):
     st = S.init(cwd=repo)
     before = _count(repo, "tick")
