@@ -434,6 +434,52 @@ def refs(store: Store, id: str):
     return out
 
 
+# Comment leaders for injecting marks, keyed by file extension; default "#".
+_COMMENT_LEADERS = {
+    **dict.fromkeys(
+        [".py", ".sh", ".bash", ".zsh", ".rb", ".pl", ".r", ".yaml", ".yml",
+         ".toml", ".cfg", ".ini", ".tf", ".dockerfile", ".mk", ".makefile", ".coffee"], "#"),
+    **dict.fromkeys(
+        [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".c", ".h", ".cpp", ".hpp",
+         ".cc", ".go", ".rs", ".java", ".kt", ".swift", ".scala", ".php", ".cs",
+         ".m", ".dart", ".proto"], "//"),
+    **dict.fromkeys([".sql", ".hs", ".lua", ".elm", ".adb", ".ads"], "--"),
+    **dict.fromkeys([".clj", ".cljs", ".el", ".lisp", ".scm"], ";"),
+}
+
+
+def _comment_leader(path: Path) -> str:
+    return _COMMENT_LEADERS.get(path.suffix.lower(), "#")
+
+
+def mark(store: Store, id: str, file: str, line: int) -> bool:
+    """Inject the tick mark `!<id>` as a trailing comment on <file>:<line> of the
+    code worktree, using a comment leader inferred from the file extension
+    (default `#`). Returns True if added, False if the mark was already on that
+    line. Edits the working tree only — no commit and no store lock, since the
+    mark lives in code that the user stages as part of their normal flow."""
+    read_tick(store, id)  # validate the tick exists (raises TickError otherwise)
+    path = store.code_root / file
+    if not path.is_file():
+        raise TickError(f"no such file: {file}")
+    try:
+        lines = path.read_text().splitlines(keepends=True)
+    except (UnicodeDecodeError, OSError) as e:
+        raise TickError(f"cannot read {file}: {e}")
+    if line < 1 or line > len(lines):
+        raise TickError(f"{file} has no line {line} (file has {len(lines)})")
+    idx = line - 1
+    raw = lines[idx]
+    text = raw.rstrip("\r\n")
+    ending = raw[len(text):]  # preserve the original line ending ("", "\n", "\r\n")
+    needle = "!" + id
+    if needle in text:
+        return False  # idempotent — already marked here
+    lines[idx] = f"{text}  {_comment_leader(path)} {needle}{ending}"
+    path.write_text("".join(lines))
+    return True
+
+
 def all_marks_in_code(store: Store) -> set[str]:
     found = set()
     for path in _iter_code_files(store):

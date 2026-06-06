@@ -135,6 +135,46 @@ def test_refs_and_orphans(repo):
     assert id not in open_without_mark        # open tick that DOES have a mark
 
 
+def test_mark_injects_trailing_comment_and_is_idempotent(repo):
+    st = S.init(cwd=repo)
+    id = S.add(st, "speed up")
+    (repo / "mod.py").write_text("def f():\n    return 1\n")
+
+    assert S.mark(st, id, "mod.py", 1) is True
+    assert (repo / "mod.py").read_text() == f"def f():  # !{id}\n    return 1\n"
+    assert S.mark(st, id, "mod.py", 1) is False                     # already there -> no-op
+    assert (repo / "mod.py").read_text().count(f"!{id}") == 1
+    assert any(p == "mod.py" for p, _, _ in S.refs(st, id))         # now discoverable
+
+
+def test_mark_comment_leader_by_extension_and_eof_line(repo):
+    st = S.init(cwd=repo)
+    id = S.add(st, "x")
+    (repo / "a.js").write_text("const x = 1;\n")
+    S.mark(st, id, "a.js", 1)
+    assert (repo / "a.js").read_text() == f"const x = 1;  // !{id}\n"      # // for JS
+
+    (repo / "b.weird").write_text("hello\n")
+    S.mark(st, id, "b.weird", 1)
+    assert (repo / "b.weird").read_text() == f"hello  # !{id}\n"           # default #
+
+    (repo / "c.py").write_text("x = 1")                                    # no trailing newline
+    S.mark(st, id, "c.py", 1)
+    assert (repo / "c.py").read_text() == f"x = 1  # !{id}"
+
+
+def test_mark_errors(repo):
+    st = S.init(cwd=repo)
+    id = S.add(st, "x")
+    (repo / "d.py").write_text("a\nb\n")
+    with pytest.raises(S.TickError, match="no such tick"):
+        S.mark(st, "2zzz", "d.py", 1)        # nonexistent tick
+    with pytest.raises(S.TickError, match="no such file"):
+        S.mark(st, id, "missing.py", 1)
+    with pytest.raises(S.TickError, match="no line"):
+        S.mark(st, id, "d.py", 99)
+
+
 def test_code_scan_honors_gitignore_and_size_cap(repo):
     """The mark scan skips gitignored paths and oversized files instead of
     reading every file under the root unbounded."""

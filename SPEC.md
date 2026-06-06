@@ -232,6 +232,7 @@ Timestamps come from an **injectable UTC clock** (see §9) so tests are determin
 | --- | --- |
 | `tick init [--remote <name>] [--store <path>]` | Create the orphan `tick` branch + `.tick/` worktree, record `tick.worktree`/`tick.remote`/`tick.branch`, add the `/.tick` `.gitignore` line (one commit), create the `.tick` symlink, and (with confirmation) install the pre-push guard. Idempotent. |
 | `tick add "<title>" [--kind K] [--tag T]...` | Mint an id, write `<id>.md`, commit. **Prints the mark `!<id>`** to paste into code. |
+| `tick mark <id> <file:line>` | Inject the mark `!<id>` as a trailing comment at `file:line` (comment leader inferred from the extension, default `#`). Edits code only — no commit, no store lock; idempotent. |
 | `tick note <id> "<text>"` | Append a dated note, commit. |
 | `tick edit <id>` | Open the tick in `$EDITOR`; on save, commit. For correcting/rewriting anything. |
 | `tick off <id>` | Set `closed: <now>`, commit. Then `grep` the code worktree for `!<id>` and **warn**, listing any sites where the mark is still embedded. |

@@ -28,6 +28,7 @@ A **tick mark** is `!` + a 4-char id whose first character is a digit, e.g.
 | --- | --- |
 | "what's next / open ticks" | `tick ls` (add `--kind`/`--tag` to filter) |
 | "add a tick / track this" | `tick add "<title>" [--kind todo\|debt\|idea] [--tag T]` then tell the user the printed `!<id>` and offer to drop the mark at the relevant code spot |
+| drop a mark into code | `tick mark <id> <file:line>` injects `!<id>` as a trailing comment there (no commit) |
 | "note that …" on a tick | `tick note <id> "<text>"` |
 | correct/expand a tick | `tick edit <id>` (opens `$EDITOR`) |
 | "tick off / done" | `tick off <id>`, then **remove the `!<id>` mark** from the code it warns about |

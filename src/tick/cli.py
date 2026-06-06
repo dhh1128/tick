@@ -45,6 +45,18 @@ def cmd_edit(args) -> int:
     return 0
 
 
+def cmd_mark(args) -> int:
+    st = store.resolve()
+    id = _strip(args.id)
+    file, sep, line_s = args.location.rpartition(":")
+    if not sep or not line_s.isdigit():
+        print("tick: expected FILE:LINE (e.g. src/foo.py:42)", file=sys.stderr)
+        return 1
+    added = store.mark(st, id, file, int(line_s))
+    print(f"marked {file}:{line_s} with !{id}" if added else f"!{id} already at {file}:{line_s}")
+    return 0
+
+
 def cmd_off(args) -> int:
     st = store.resolve()
     id = _strip(args.id)
@@ -171,6 +183,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("edit", help="open a tick in $EDITOR to correct/rewrite")
     sp.add_argument("id")
     sp.set_defaults(func=cmd_edit)
+
+    sp = sub.add_parser("mark", help="inject a tick mark into code at FILE:LINE")
+    sp.add_argument("id")
+    sp.add_argument("location", metavar="FILE:LINE", help="where to inject the mark, e.g. src/foo.py:42")
+    sp.set_defaults(func=cmd_mark)
 
     sp = sub.add_parser("off", help="tick off (close) a tick")
     sp.add_argument("id")

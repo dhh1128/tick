@@ -81,6 +81,25 @@ def test_cli_refs_and_orphans(repo, monkeypatch, capsys):
     assert "2zzz" in out  # mark with no tick
 
 
+def test_cli_mark(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    cli.main(["init"])
+    capsys.readouterr()
+    cli.main(["add", "speed up"])
+    tid = re.search(r"!([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)
+    (repo / "x.py").write_text("y = 2\n")
+
+    assert cli.main(["mark", tid, "x.py:1"]) == 0
+    assert f"# !{tid}" in (repo / "x.py").read_text()
+    # accepts the !-prefixed id too, and reports the no-op on a repeat
+    assert cli.main(["mark", f"!{tid}", "x.py:1"]) == 0
+    assert "already" in capsys.readouterr().out
+
+    # malformed FILE:LINE -> usage error, exit 1
+    assert cli.main(["mark", tid, "x.py"]) == 1
+    assert "FILE:LINE" in capsys.readouterr().err
+
+
 def test_cli_uninitialized_errors(repo, monkeypatch, capsys):
     monkeypatch.chdir(repo)
     assert cli.main(["ls"]) == 1

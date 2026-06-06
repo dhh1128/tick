@@ -55,6 +55,12 @@ def tokenize(src):  # !4mz3 quadratic on long inputs
     ...
 ```
 
+…or let tick inject it for you (comment style inferred from the extension):
+
+```sh
+tick mark 4mz3 src/lexer.py:12     # appends `# !4mz3` to that line
+```
+
 Then:
 
 ```sh
@@ -84,6 +90,7 @@ mark (`tick show <id>`).
 | --- | --- |
 | `tick init` | Set up the ledger (orphan branch, `.tick/` worktree, config, gitignore). |
 | `tick add "<title>" [--kind todo\|debt\|idea] [--tag T]…` | Add a tick; prints the mark. |
+| `tick mark <id> <file:line>` | Inject the mark as a trailing comment at `file:line` (no commit). |
 | `tick note <id> "<text>"` | Append a dated note. |
 | `tick edit <id>` | Open the tick in `$EDITOR` to correct/rewrite. |
 | `tick off <id>` / `tick reopen <id>` | Close / reopen. |
