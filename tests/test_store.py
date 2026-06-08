@@ -82,10 +82,62 @@ def test_legacy_absolute_config_migrates_on_resolve(repo, tmp_path):
     assert _git(["config", "--get", "tick.worktree"], dest).stdout.strip() == ".tick"
 
 
-def test_init_adds_gitignore_in_exactly_one_code_commit(repo):
+def test_init_adds_gitignore_and_agents_stanza_in_two_code_commits(repo):
     before = _count(repo)
     S.init(cwd=repo)
-    assert _count(repo) - before == 1  # only the /.tick .gitignore commit on the code branch
+    # one commit for the /.tick .gitignore, one for the AGENTS.md stanza
+    assert _count(repo) - before == 2
+
+
+def test_init_injects_agents_stanza(repo):
+    S.init(cwd=repo)
+    agents = repo / "AGENTS.md"
+    assert agents.exists()
+    text = agents.read_text()
+    assert S.STANZA_BEGIN in text and S.STANZA_END in text
+    assert "Task tracking: `tick`" in text
+    # the corrected, whole-word grep pattern is what we tell agents to run
+    assert r"~[2-7][a-z2-7]{3}\b" in text
+
+
+def test_init_agents_stanza_is_idempotent(repo):
+    S.init(cwd=repo)
+    first = (repo / "AGENTS.md").read_text()
+    count_after_first = _count(repo)
+    S.init(cwd=repo)  # idempotent re-init
+    assert (repo / "AGENTS.md").read_text() == first  # no duplication
+    assert _count(repo) == count_after_first  # no extra commit
+
+
+def test_injected_stanza_contains_no_literal_mark():
+    """The stanza lands in a tracked, mark-scanned file, so it must not contain a
+    literal mark — otherwise every tick-initialized repo gets a guaranteed phantom
+    orphan, and an agent following the stanza's own `rg` would find a dangling mark.
+    The example id is shown without its `~` sigil precisely to avoid this."""
+    assert core.extract_marks(S._TICK_STANZA) == []
+
+
+def test_orphans_clean_after_init_then_detects_real_mark(repo):
+    """A fresh init (which injects the stanza into AGENTS.md) reports no orphans.
+    A genuine mark the user later adds to AGENTS.md is detected like any other."""
+    st = S.init(cwd=repo)
+    marks_without_tick, _ = S.orphans(st)
+    assert marks_without_tick == set()  # no phantom from the injected stanza
+    with open(repo / "AGENTS.md", "a") as f:
+        f.write("\nsee ~7qax for the design notes\n")
+    marks_without_tick, _ = S.orphans(st)
+    assert marks_without_tick == {"7qax"}
+
+
+def test_init_preserves_existing_agents_md(repo):
+    existing = "# AGENTS\n\nProject-specific guidance the user already wrote.\n"
+    (repo / "AGENTS.md").write_text(existing)
+    _git(["add", "AGENTS.md"], repo)
+    _git(["commit", "-m", "add AGENTS.md"], repo)
+    S.init(cwd=repo)
+    text = (repo / "AGENTS.md").read_text()
+    assert existing in text  # original content untouched
+    assert S.STANZA_BEGIN in text  # stanza appended
 
 
 def test_init_from_linked_worktree_ignores_tick_in_primary(repo, tmp_path):

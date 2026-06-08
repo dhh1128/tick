@@ -25,6 +25,7 @@ def cmd_init(args) -> int:
     print(f"  branch: {st.branch}")
     print(f"  remote: {st.remote or '(none — set later with tick.remote)'}")
     print(f"  autopush: {'on' if st.autopush else 'off'} (background backup after each mutation)")
+    print(f"  agents: tick stanza added to AGENTS.md (how agents drive the ledger)")
     return 0
 
 

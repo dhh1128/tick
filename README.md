@@ -83,7 +83,7 @@ The digit-first rule means it can never collide with a unary operator applied to
 an identifier (`~mask`, `!data`, …), so it's uniquely greppable:
 
 ```sh
-rg '~[2-7][a-z2-7]{3}'   # find every tick mark in the code
+rg '~[2-7][a-z2-7]{3}\b'   # find every tick mark in the code
 ```
 
 The sigil is `~`, not `!`: a leading `!` triggers bash history expansion, so a

@@ -48,10 +48,24 @@ def test_mark_regex_matches_and_rejects():
     assert core.extract_marks("~7qax") == ["7qax"]
     for s in ["~data", "~user", "~name", "~flag", "~/path", "~a", "~2k3"]:
         assert core.extract_marks(s) == [], s
-    # matches only the first 4 chars of a longer run
-    assert core.extract_marks("~2k3mz") == ["2k3m"]
     # the old '!' sigil is no longer a mark
     assert core.extract_marks("!2k3m") == []
+
+
+def test_mark_requires_trailing_word_boundary():
+    # A mark must be a whole-word token: a word char immediately after the id
+    # means it's NOT a mark, it just shares a prefix with one.
+    # Regression: "~25min" (about 25 minutes) used to match ~25mi and be flagged
+    # as an orphaned tick.
+    assert core.extract_marks("about ~25min of work") == []
+    assert core.extract_marks("~2k3mz") == []   # trailing base32 char
+    assert core.extract_marks("~2k3m8") == []   # trailing non-base32 digit
+    assert core.extract_marks("~2k3m_") == []   # trailing underscore
+    # Non-word chars after the id are fine — the mark still matches.
+    assert core.extract_marks("~2k3m.") == ["2k3m"]
+    assert core.extract_marks("(~7qax)") == ["7qax"]
+    assert core.extract_marks("a ~2k3m\n") == ["2k3m"]
+    assert core.extract_marks("path/~4mz3,end") == ["4mz3"]
 
 
 def test_extract_multiple_marks():

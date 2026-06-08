@@ -105,7 +105,7 @@ stable primary clone.
 - **Grep reality (corrected from an earlier draft):** because `.tick/` is gitignored, `rg`/`grep`
   **skip it by default**. That's fine — the *marks* are what you grep for, and they live in source
   regardless of where the store sits:
-  - **Marks** → `rg '~[2-7][a-z2-7]{3}'` over the code, always works.
+  - **Marks** → `rg '~[2-7][a-z2-7]{3}\b'` over the code, always works.
   - **Tick bodies** → `tick grep <text>` (the tool greps the store wherever it is); raw
     `rg --no-ignore .tick/` also works but isn't the path.
   So store location is essentially grep-neutral; it's chosen for invisibility, not greppability.
@@ -187,7 +187,10 @@ greppable:
 - But an identifier (and a numeric literal) can **never start with a digit**, so `~2k3m` cannot be a
   unary operator applied to anything — `~2k3m` simply does not parse as code in any mainstream language.
 
-Canonical grep: `rg '~[2-7][a-z2-7]{3}'` — effectively false-positive-free.
+Canonical grep: `rg '~[2-7][a-z2-7]{3}\b'` — effectively false-positive-free. The trailing
+`\b` keeps a mark a whole-word token, so prose like `~25min` (which shares a 4-char prefix
+with a valid id) isn't mistaken for one. `\b` rather than a lookahead because the same string
+is what agents run under `rg`, whose default engine supports `\b` but not lookaround.
 
 **Why `~` and not `!` (resolves the `tick show` footgun):** the sigil is copy-pasted out of `ls`/`grep`/
 conversation straight into `tick show <mark>`. A leading `!` triggers **bash history expansion** in any
@@ -265,7 +268,7 @@ Reads (`ls`, `show`, `grep`, `refs`, `orphans`) make **no** network calls.
 
 - **Reads are plain files.** Agents use their native Read/Grep — no MCP, no network (pressures 1 & 2).
 - **Target repos get an `AGENTS.md` / `CLAUDE.md` stanza**, roughly:
-  > This repo uses `tick` for task tracking. Before editing a file, `rg '~[2-7][a-z2-7]{3}' <file>` for
+  > This repo uses `tick` for task tracking. Before editing a file, `rg '~[2-7][a-z2-7]{3}\b' <file>` for
   > tick marks and read each referenced tick with `tick show <id>`. To search existing ticks, use
   > `tick grep <text>`. When your change resolves a tick, `tick off <id>` and delete the mark. To
   > capture new work, `tick add "<title>"`.

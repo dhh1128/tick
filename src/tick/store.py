@@ -31,6 +31,37 @@ persistent worktree and is unrelated to the code branches' history. Mutate it wi
 the `tick` CLI, not by editing here directly.
 """
 
+STANZA_BEGIN = "<!-- >>> tick stanza >>> (managed by `tick init`) -->"
+STANZA_END = "<!-- <<< tick stanza <<< -->"
+# Instructions injected into the target repo's AGENTS.md so coding agents drive the
+# local ledger instead of an external tracker. Wrapped in the markers above so a
+# re-init is idempotent and a future `tick` can refresh it in place. The grep
+# pattern here MUST stay in sync with core.MARK_RE (trailing `\b` = whole-word mark).
+# This text is itself scanned for marks (it lands in a tracked file), so it must NOT
+# contain a literal mark — the id below is shown WITHOUT the `~` sigil on purpose, so
+# neither tick nor an agent's own `rg` mistakes the example for a real pin.
+_TICK_STANZA = f"""\
+{STANZA_BEGIN}
+## Task tracking: `tick`
+
+This repo tracks tasks, tech debt, and ideas in a local [`tick`](https://github.com/dhh1128/tick)
+ledger (an orphan `tick` branch; the `tick` CLI is the interface). Reads are plain
+files — do **not** use an external API for task tracking.
+
+- **A tick mark is the sigil `~` immediately followed by a digit-first 4-char
+  base32 id** (the id part looks like `4mz3`, so the full mark is that id with a
+  leading `~`). It pins a tick to a code location.
+- **Before editing a file**, grep it for marks and read what they reference:
+  `rg '~[2-7][a-z2-7]{{3}}\\b' <file>` then `tick show <id>`. A mark means recorded
+  context exists for that spot — read it first.
+- **Search** existing ticks with `tick grep <text>`; **list** with `tick ls`.
+- **Capture** new work with `tick add "<title>"` and place the printed mark
+  (`~` + the new id) at the relevant code spot.
+- When your change **resolves** a tick, run `tick off <id>` and **delete the
+  mark(s)** it reports still in the code.
+{STANZA_END}
+"""
+
 GUARD_BEGIN = "# >>> tick pre-push guard >>>"
 GUARD_END = "# <<< tick pre-push guard <<<"
 _PRE_PUSH_GUARD = f"""\
@@ -191,6 +222,7 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
 
     if _config_get("tick.worktree", cwd):
         _ensure_code_gitignore(primary_root)  # self-heal a half-ignored repo; no-op if already present
+        _ensure_agents_stanza(primary_root)   # self-heal a missing AGENTS.md stanza; no-op if present
         return resolve(cwd)  # idempotent
 
     store_path = Path(store_path).resolve() if store_path else (primary_root / ".tick")
@@ -215,6 +247,7 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
         _config_set("tick.remote", remote, cwd)
 
     _ensure_code_gitignore(primary_root)
+    _ensure_agents_stanza(primary_root)
 
     store = resolve(cwd)
     if install_guard:
@@ -249,6 +282,25 @@ def _ensure_code_gitignore(primary_root) -> bool:
         f.write("/.tick\n" + LOCK_NAME + "\n")
     git(["add", ".gitignore"], primary_root)
     git(["commit", "-s", "-m", "chore: ignore tick ledger worktree (/.tick)"], primary_root)
+    return True
+
+
+def _ensure_agents_stanza(primary_root) -> bool:
+    """Append the tick stanza to the primary worktree's AGENTS.md (one commit).
+
+    Teaches coding agents to drive the local ledger instead of an external tracker.
+    Idempotent: skipped if the stanza marker is already present, so a re-init never
+    duplicates it. Creates AGENTS.md when absent and preserves any existing content
+    (the stanza is appended). Targets the primary worktree for the same reason as
+    `_ensure_code_gitignore` — that's the checkout users actually read."""
+    agents = primary_root / "AGENTS.md"
+    existing = agents.read_text() if agents.exists() else ""
+    if STANZA_BEGIN in existing:
+        return False
+    sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+    agents.write_text(existing + sep + _TICK_STANZA)
+    git(["add", "AGENTS.md"], primary_root)
+    git(["commit", "-s", "-m", "docs: add tick stanza to AGENTS.md"], primary_root)
     return True
 
 

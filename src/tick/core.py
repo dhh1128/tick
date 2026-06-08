@@ -25,8 +25,12 @@ ID_LEN = 4
 # `tick show !2k3m` dies in interactive bash before tick ever runs; `~2k3m` survives
 # because tilde expansion only fires for a real login name, which a digit-first id
 # never is. `~` also never collides with a comment leader (unlike `//`/`#`).
+# The trailing `\b` makes a mark a whole-word token: without it `~25min` matches
+# `~25mi` (every id char is a word char) and gets flagged as an orphaned tick. `\b`
+# (not a lookahead) so the pattern is byte-identical to the `rg` string agents run —
+# ripgrep's default engine supports `\b` but has no lookaround.
 MARK_SIGIL = "~"
-MARK_RE = re.compile(rf"{re.escape(MARK_SIGIL)}[2-7][a-z2-7]{{3}}")
+MARK_RE = re.compile(rf"{re.escape(MARK_SIGIL)}[2-7][a-z2-7]{{3}}\b")
 _ID_RE = re.compile(r"^[2-7][a-z2-7]{3}$")
 
 VALID_KINDS = ("todo", "debt", "idea")
