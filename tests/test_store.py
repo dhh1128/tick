@@ -472,6 +472,32 @@ def test_init_adopts_existing_remote_ledger(repo, tmp_path):
     assert _git(["rev-parse", "--abbrev-ref", "tick@{upstream}"], second).stdout.strip() == "origin/tick"
 
 
+def test_resolve_points_unconnected_clone_at_init(repo, tmp_path):
+    """A colleague who clones a tick-using repo but never ran `tick init` has no
+    local tick.* config, yet the clone carries refs/remotes/origin/tick. resolve()
+    must tell them to *connect* (run init to adopt), distinct from the create-from-
+    scratch message when no ledger exists anywhere — and decide this offline, from
+    the remote-tracking ref the clone already has (no network call)."""
+    bare = _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["push", "origin", "main"], repo)
+    _git(["push", "origin", "tick"], repo)
+
+    second = tmp_path / "second"
+    _git(["clone", str(bare), str(second)], tmp_path)
+    # Fresh clone: no local tick.* config, but it carries refs/remotes/origin/tick.
+    assert "refs/remotes/origin/tick" in _git(["for-each-ref", "--format=%(refname)"], second).stdout
+    with pytest.raises(S.TickError, match="already has a tick ledger on the remote"):
+        S.resolve(cwd=second)
+
+
+def test_resolve_uninitialized_with_no_remote_ledger(repo):
+    """No ledger anywhere (no remote tick branch) keeps the plain create-it message,
+    so we don't misdirect a genuinely first-time user to 'connect'."""
+    with pytest.raises(S.TickError, match="tick is not initialized in this repo"):
+        S.resolve(cwd=repo)
+
+
 def test_commits_bypass_host_repo_commit_hooks(repo):
     """The host repo's pre-commit hook (husky/lint-staged running `prettier --check`
     in the wild) must not gate tick's managed commits — neither init's AGENTS.md /

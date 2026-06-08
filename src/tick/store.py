@@ -53,6 +53,9 @@ This repo tracks tasks, tech debt, and ideas in a local [`tick`](https://github.
 ledger (an orphan `tick` branch; the `tick` CLI is the interface). Reads are plain
 files — do **not** use an external API for task tracking.
 
+- **First, if a `tick` command says the repo isn't initialized**, run `tick init`
+  once to connect this clone to the ledger — it adopts the existing remote ledger
+  if a colleague already set one up, or creates a new one otherwise.
 - **A tick mark is the sigil `~` immediately followed by a digit-first 4-char
   base32 id** (the id part looks like `4mz3`, so the full mark is that id with a
   leading `~`). It pins a tick to a code location.
@@ -211,6 +214,17 @@ def resolve(cwd=".") -> Store:
         raise TickError("not inside a git repository")
     raw = _config_get("tick.worktree", cwd)
     if not raw:
+        # No local config — this clone isn't wired to the ledger. Distinguish "a
+        # colleague already inited it (adopt)" from "nobody has (create)". A normal
+        # clone of a repo with a `tick` branch already has refs/remotes/*/tick, so
+        # this is a zero-network local check on the error path; `tick init` does the
+        # authoritative remote `ls-remote` when it actually adopts.
+        seen = git(["for-each-ref", "--format=%(refname)", "refs/remotes/*/tick"], cwd, check=False)
+        if seen.strip():
+            raise TickError(
+                "this repo already has a tick ledger on the remote — "
+                "run `tick init` to connect this clone to it"
+            )
         raise TickError("tick is not initialized in this repo — run `tick init`")
     common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
     primary_root = _primary_root(common)
