@@ -431,6 +431,17 @@ def test_sync_without_remote_errors(repo):
         S.sync(st)
 
 
+def test_reinit_with_install_guard_installs_guard(repo):
+    """`tick init --install-guard` must install the guard even when the repo is
+    already initialized — the early-return idempotency path used to skip it, so a
+    user who forgot the flag on first init had no way to add it via re-init."""
+    st = S.init(cwd=repo)  # first init, no guard
+    guard = st.git_common_dir / "hooks" / "pre-push"
+    assert not guard.exists()  # not installed yet
+    S.init(cwd=repo, install_guard=True)  # re-init with the flag
+    assert guard.exists() and S.GUARD_BEGIN in guard.read_text()
+
+
 def test_pre_push_guard_chains_real_hook(repo, tmp_path):
     st = S.init(cwd=repo)
     # Pretend the repo already had a heavy pre-push hook.

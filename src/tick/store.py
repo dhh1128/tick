@@ -223,7 +223,10 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     if _config_get("tick.worktree", cwd):
         _ensure_code_gitignore(primary_root)  # self-heal a half-ignored repo; no-op if already present
         _ensure_agents_stanza(primary_root)   # self-heal a missing AGENTS.md stanza; no-op if present
-        return resolve(cwd)  # idempotent
+        store = resolve(cwd)  # idempotent
+        if install_guard:
+            install_pre_push_guard(store)  # reachable on re-init too (e.g. flag forgotten first time); idempotent
+        return store
 
     store_path = Path(store_path).resolve() if store_path else (primary_root / ".tick")
 
