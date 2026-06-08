@@ -117,6 +117,21 @@ def test_injected_stanza_contains_no_literal_mark():
     assert core.extract_marks(S._TICK_STANZA) == []
 
 
+def test_injected_stanza_is_prettier_clean_by_construction():
+    """The stanza is appended to a tracked AGENTS.md that the host repo's
+    lint-staged/CI may run `prettier --check` on. Prettier requires a blank line
+    on both sides of an HTML comment block, and a list item that hugs the closing
+    comment with no blank line gets its continuation de-indented. Asserting the
+    blank-line structure (dependency-free, no prettier binary needed) guards against
+    a future edit silently reintroducing the commit-blocking non-conformance."""
+    lines = S._TICK_STANZA.splitlines()
+    begin, end = lines.index(S.STANZA_BEGIN), lines.index(S.STANZA_END)
+    assert lines[begin + 1] == "", "need a blank line after the opening stanza marker"
+    assert lines[end - 1] == "", "need a blank line before the closing stanza marker"
+    # No list item may hug the closing marker (would de-indent under prettier).
+    assert not lines[end - 2].startswith(("-", " ")) or lines[end - 1] == ""
+
+
 def test_orphans_clean_after_init_then_detects_real_mark(repo):
     """A fresh init (which injects the stanza into AGENTS.md) reports no orphans.
     A genuine mark the user later adds to AGENTS.md is detected like any other."""
@@ -423,6 +438,54 @@ def test_sync_round_trips_through_a_real_remote(repo, tmp_path):
     _git(["clone", "--branch", "tick", str(bare), str(check)], tmp_path)
     remote = {p.name for p in check.glob("*.md")}
     assert {f"{bid}.md", "2aaa.md"} <= remote            # remote received our push too
+
+
+def test_init_adopts_existing_remote_ledger(repo, tmp_path):
+    """A second contributor running `tick init` on a repo whose ledger a colleague
+    already pushed must pick up that branch (shared history + their ticks), not mint
+    a fresh divergent orphan that would later collide on push."""
+    bare = _bare_remote(repo, tmp_path)
+    # First contributor initializes and pushes both the code and the ledger.
+    st = S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)
+    st = S.resolve(cwd=repo)
+    aid = S.add(st, "first contributor's task")
+    _git(["push", "origin", "main"], repo)
+    _git(["push", "origin", "tick"], repo)
+    remote_tip = _git(["ls-remote", "--heads", str(bare), "tick"], repo).stdout.split()[0]
+
+    # Second contributor: a fresh clone (no local tick.* config, no local tick branch).
+    second = tmp_path / "second"
+    _git(["clone", str(bare), str(second)], tmp_path)
+    _git(["config", "user.email", "two@example.com"], second)
+    _git(["config", "user.name", "Two"], second)
+
+    st2 = S.init(cwd=second)
+    assert st2.remote == "origin"
+    # Adopted the colleague's branch: their tick is present locally...
+    assert (st2.worktree / f"{aid}.md").is_file()
+    # ...and the local tick branch shares the remote's history (a fast-forward, not
+    # an unrelated-history orphan).
+    local_tip = _git(["rev-parse", "tick"], second).stdout.strip()
+    assert local_tip == remote_tip
+    # Tracking is wired so sync's pull/push reconcile cleanly.
+    assert _git(["rev-parse", "--abbrev-ref", "tick@{upstream}"], second).stdout.strip() == "origin/tick"
+
+
+def test_commits_bypass_host_repo_commit_hooks(repo):
+    """The host repo's pre-commit hook (husky/lint-staged running `prettier --check`
+    in the wild) must not gate tick's managed commits — neither init's AGENTS.md /
+    .gitignore commits nor any later ledger mutation (which commits in a worktree
+    that shares the repo's .git/hooks). tick commits with --no-verify."""
+    pc = repo / ".git" / "hooks" / "pre-commit"
+    pc.write_text("#!/bin/sh\necho 'prettier --check: AGENTS.md' >&2\nexit 1\n")
+    pc.chmod(0o755)
+
+    st = S.init(cwd=repo)                       # dies on the AGENTS.md commit without --no-verify
+    assert (repo / "AGENTS.md").read_text().count(S.STANZA_BEGIN) == 1
+    assert "/.tick" in (repo / ".gitignore").read_text()
+    aid = S.add(st, "still works")              # ledger commit also bypasses the hook
+    assert (st.worktree / f"{aid}.md").is_file()
 
 
 def test_sync_without_remote_errors(repo):

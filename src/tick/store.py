@@ -40,8 +40,13 @@ STANZA_END = "<!-- <<< tick stanza <<< -->"
 # This text is itself scanned for marks (it lands in a tracked file), so it must NOT
 # contain a literal mark — the id below is shown WITHOUT the `~` sigil on purpose, so
 # neither tick nor an agent's own `rg` mistakes the example for a real pin.
+# The blank lines AROUND the HTML comment markers are load-bearing: without them
+# Prettier's markdown formatter flags the stanza (and a list item hugging the closing
+# comment gets its continuation de-indented), so `prettier --check` in the host repo's
+# lint-staged/CI would reject AGENTS.md. Keep them — the stanza is prettier-clean as-is.
 _TICK_STANZA = f"""\
 {STANZA_BEGIN}
+
 ## Task tracking: `tick`
 
 This repo tracks tasks, tech debt, and ideas in a local [`tick`](https://github.com/dhh1128/tick)
@@ -59,6 +64,7 @@ files — do **not** use an external API for task tracking.
   (`~` + the new id) at the relevant code spot.
 - When your change **resolves** a tick, run `tick off <id>` and **delete the
   mark(s)** it reports still in the code.
+
 {STANZA_END}
 """
 
@@ -115,6 +121,17 @@ def git(args, cwd, check=True, input=None) -> str:
     if check and p.returncode != 0:
         raise TickError(f"git {' '.join(map(str, args))} failed: {p.stderr.strip() or p.stdout.strip()}")
     return p.stdout.strip()
+
+
+def _commit(cwd, message) -> str:
+    """Make one of tick's own managed commits. `--no-verify` so the host repo's
+    commit hooks never gate tick's bookkeeping: tick commits run in worktrees that
+    share the repo's `.git/hooks`, so a husky/lint-staged `prettier --check`,
+    `eslint`, `commitlint`, gitleaks scan, or pre-commit test suite would otherwise
+    reject tick's gitignore line, its AGENTS.md stanza, and every ledger commit.
+    Same rationale as the pre-push guard that skips the code repo's test tax on
+    tick-branch pushes (SPEC §3.5). `-s` keeps the DCO sign-off."""
+    return git(["commit", "--no-verify", "-s", "-m", message], cwd)
 
 
 def _config_get(key, cwd, default=None):
@@ -229,23 +246,31 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
         return store
 
     store_path = Path(store_path).resolve() if store_path else (primary_root / ".tick")
+    remote = remote or _detect_remote(cwd)
 
-    # Create an orphan branch from an empty root commit (no --orphan needed; robust
-    # across git versions), then check it out as a worktree.
-    empty_tree = git(["hash-object", "-t", "tree", "--stdin"], cwd, input="")
-    root_commit = git(["commit-tree", empty_tree, "-m", "tick: root"], cwd)
-    git(["branch", BRANCH, root_commit], cwd)
-    git(["worktree", "add", str(store_path), BRANCH], cwd)
+    if remote and _remote_has_branch(remote, BRANCH, cwd):
+        # A contributor already initialized this repo and pushed the ledger. Adopt
+        # that branch instead of minting a fresh (divergent, unrelated-history)
+        # orphan root that would later collide on push. Fetch just the tick branch
+        # into its tracking ref, then check it out as a worktree tracking it.
+        git(["fetch", remote, f"+refs/heads/{BRANCH}:refs/remotes/{remote}/{BRANCH}"], cwd)
+        git(["worktree", "add", "--track", "-b", BRANCH, str(store_path), f"{remote}/{BRANCH}"], cwd)
+    else:
+        # Create an orphan branch from an empty root commit (no --orphan needed; robust
+        # across git versions), then check it out as a worktree.
+        empty_tree = git(["hash-object", "-t", "tree", "--stdin"], cwd, input="")
+        root_commit = git(["commit-tree", empty_tree, "-m", "tick: root"], cwd)
+        git(["branch", BRANCH, root_commit], cwd)
+        git(["worktree", "add", str(store_path), BRANCH], cwd)
 
-    (store_path / ".gitignore").write_text(LOCK_NAME + "\n")
-    (store_path / "README.md").write_text(TICK_BRANCH_README)
-    git(["add", "-A"], store_path)
-    git(["commit", "-s", "-m", "tick: initialize ledger store"], store_path)
+        (store_path / ".gitignore").write_text(LOCK_NAME + "\n")
+        (store_path / "README.md").write_text(TICK_BRANCH_README)
+        git(["add", "-A"], store_path)
+        _commit(store_path, "tick: initialize ledger store")
 
     _config_set("tick.worktree", _rel_or_abs(store_path, primary_root), cwd)
     _config_set("tick.branch", BRANCH, cwd)
     _config_set("tick.autopush", "true", cwd)  # back up the ledger after each mutation; off via `git config tick.autopush false`
-    remote = remote or _detect_remote(cwd)
     if remote:
         _config_set("tick.remote", remote, cwd)
 
@@ -266,6 +291,12 @@ def _detect_remote(cwd):
     return remotes[0] if remotes else None
 
 
+def _remote_has_branch(remote, branch, cwd) -> bool:
+    """True if `remote` already publishes `branch` (so init should adopt it rather
+    than create a divergent orphan). One cheap network round-trip via ls-remote."""
+    return bool(git(["ls-remote", "--heads", remote, branch], cwd, check=False).strip())
+
+
 def _ensure_code_gitignore(primary_root) -> bool:
     """Add `/.tick` + lock to the primary worktree's tracked .gitignore (one commit).
 
@@ -284,7 +315,7 @@ def _ensure_code_gitignore(primary_root) -> bool:
             f.write("\n")
         f.write("/.tick\n" + LOCK_NAME + "\n")
     git(["add", ".gitignore"], primary_root)
-    git(["commit", "-s", "-m", "chore: ignore tick ledger worktree (/.tick)"], primary_root)
+    _commit(primary_root, "chore: ignore tick ledger worktree (/.tick)")
     return True
 
 
@@ -303,7 +334,7 @@ def _ensure_agents_stanza(primary_root) -> bool:
     sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
     agents.write_text(existing + sep + _TICK_STANZA)
     git(["add", "AGENTS.md"], primary_root)
-    git(["commit", "-s", "-m", "docs: add tick stanza to AGENTS.md"], primary_root)
+    _commit(primary_root, "docs: add tick stanza to AGENTS.md")
     return True
 
 
@@ -394,7 +425,7 @@ def _write_commit(store: Store, id: str, text: str, msg: str):
     p = _tick_path(store, id)
     p.write_text(text)
     git(["add", p.name], store.worktree)
-    git(["commit", "-s", "-m", msg], store.worktree)
+    _commit(store.worktree, msg)
 
 
 def add(store: Store, title: str, kind=core.DEFAULT_KIND, tags=None, clock=core.utc_now, rng=None) -> str:
@@ -445,7 +476,7 @@ def edit(store: Store, id: str, editor=None) -> bool:
         return False
     with _lock(store):
         git(["add", p.name], store.worktree)
-        git(["commit", "-s", "-m", f"tick edit {id}"], store.worktree)
+        _commit(store.worktree, f"tick edit {id}")
     _autopush(store)
     return True
 
