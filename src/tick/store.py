@@ -14,6 +14,7 @@ import fcntl  # ~55ez POSIX-only locking; Windows has no fcntl
 import os
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -153,6 +154,12 @@ def _config_set(key, value, cwd):
     git(["config", key, value], cwd)
 
 
+def _warn(msg: str) -> None:
+    """Surface a recovery/self-heal notice on stderr (stdout stays clean for
+    machine-readable command output)."""
+    print(f"tick: {msg}", file=sys.stderr)
+
+
 # ----------------------------------------------------------------- resolve / init
 
 
@@ -208,6 +215,54 @@ def _repair_worktree_link(primary_root: Path, worktree: Path) -> None:
     git(["worktree", "repair", str(worktree)], primary_root, check=False)
 
 
+def _local_has_branch(branch: str, cwd) -> bool:
+    """True if a local branch ref exists (used to decide whether a vanished store
+    can be re-checked-out from a surviving local branch before reaching for the
+    remote)."""
+    return bool(git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd, check=False))
+
+
+def _heal_worktree(primary_root: Path, worktree: Path, branch: str, remote: str | None) -> None:
+    """Detect and recover a ledger store whose worktree has gone missing — the
+    `.tick/` directory deleted, or its branch removed underneath it (e.g. someone
+    ran `rm -rf .tick`, or `git worktree remove` + `git branch -D tick`). Without
+    this, a stale `tick.worktree` config leaves `tick ls` silently reporting an
+    empty ledger and `tick add` crashing on the missing lock file — both look like
+    data loss even though the commits survive on the local branch and/or the remote.
+
+    Cheap on the hot path: a present worktree returns after one `_repair_worktree_link`
+    check (the moved-repo case). Recovery only runs when the directory is gone, in
+    most-local-first order so it stays offline when it can:
+
+      1. directory present                              -> repair a moved-repo link
+      2. directory gone, local `branch` still exists    -> prune + re-check-out from it
+      3. directory gone, branch gone, remote has it      -> re-fetch + re-adopt
+      4. nothing left anywhere                            -> raise (don't fake an empty ledger)
+    """
+    if worktree.exists():
+        _repair_worktree_link(primary_root, worktree)
+        return
+    # The configured store path is gone. Clear the now-dangling worktree registration
+    # so `git worktree add` won't refuse the path as still-registered.
+    git(["worktree", "prune"], primary_root, check=False)
+    if _local_has_branch(branch, primary_root):
+        _warn(f"ledger worktree at {worktree} was missing — re-checking out the local `{branch}` branch")
+        git(["worktree", "add", str(worktree), branch], primary_root)
+        return
+    if remote and _remote_has_branch(remote, branch, primary_root):
+        _warn(f"ledger worktree at {worktree} was missing — re-fetching the `{branch}` ledger from `{remote}`")
+        git(["fetch", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"], primary_root)
+        git(["worktree", "add", "--track", "-b", branch, str(worktree), f"{remote}/{branch}"], primary_root)
+        return
+    raise TickError(
+        f"the tick ledger worktree at {worktree} is gone and cannot be recovered automatically: "
+        f"no local `{branch}` branch, and "
+        + (f"`{remote}` has no `{branch}` branch either" if remote else "no remote is configured")
+        + f". If the branch still exists in your reflog (`git reflog show {branch}`), recreate it and run "
+        f"`git worktree add {worktree} {branch}`; otherwise the ledger data has been lost."
+    )
+
+
 def resolve(cwd=".") -> Store:
     code_root = git(["rev-parse", "--show-toplevel"], cwd, check=False)
     if not code_root:
@@ -231,13 +286,15 @@ def resolve(cwd=".") -> Store:
     worktree, migrate = _resolve_store_path(raw, primary_root)
     if migrate:
         _config_set("tick.worktree", _rel_or_abs(worktree, primary_root), cwd)
-    _repair_worktree_link(primary_root, worktree)
+    remote = _config_get("tick.remote", cwd)
+    branch = _config_get("tick.branch", cwd, BRANCH)
+    _heal_worktree(primary_root, worktree, branch, remote)
     return Store(
         code_root=Path(code_root),
         git_common_dir=common,
         worktree=worktree,
-        remote=_config_get("tick.remote", cwd),
-        branch=_config_get("tick.branch", cwd, BRANCH),
+        remote=remote,
+        branch=branch,
         autopush=_config_bool("tick.autopush", cwd, True),
     )
 

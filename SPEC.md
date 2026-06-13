@@ -395,7 +395,14 @@ zipapp is the primary artifact.
   against `--git-common-dir`'s parent; git's linked-worktree pointer is self-healed with
   `git worktree repair` on resolve. A repo move/rename therefore needs no manual config reset or
   worktree repair. Legacy absolute config values are migrated to relative on first resolve after a move.
-- **Concurrency:** safety from `flock` (not append-only); notes are fully editable.
+- **Self-healing store (vanished worktree):** if the configured `.tick/` store directory is missing on
+  `resolve` (e.g. `rm -rf .tick`, or `git worktree remove` + `git branch -D tick`), tick auto-recovers
+  rather than silently reporting an empty ledger (or crashing `add` on the missing lock file): it prunes
+  the stale worktree registration, then re-checks-out the worktree from the surviving local `tick`
+  branch (offline) or, if that's gone too, re-fetches and re-adopts the branch from the remote (rewiring
+  upstream tracking). Only when neither the local branch nor a remote branch exists does it raise — a
+  loud, non-silent error pointing at the reflog. Same most-local-first philosophy as init's adopt path;
+  the present-directory hot path stays a single `exists()` check plus the existing moved-repo link repair.
 - **Push target:** same remote as the code, branch `tick` (ignorable); not a separate private remote.
 - **Automatic backup (`6pyc`):** mutations fire a best-effort, detached background `git push` of the
   ledger branch (`tick.autopush`, default on), so backup needs no manual `tick sync`. Kept off the write
