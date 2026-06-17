@@ -360,6 +360,31 @@ def test_init_enables_autopush_and_detects_remote(repo, tmp_path):
     assert _git(["config", "--get", "tick.autopush"], repo).stdout.strip() == "true"
 
 
+def test_reinit_with_remote_attaches_it(repo, tmp_path):
+    """`tick init` run before the remote existed leaves tick.remote unset; re-running
+    `tick init --remote origin` once the remote is configured must attach it rather
+    than silently drop the argument."""
+    st = S.init(cwd=repo)                                 # no remote yet
+    assert st.remote is None
+    _bare_remote(repo, tmp_path)                          # remote added afterwards
+    st2 = S.init(cwd=repo, remote="origin")
+    assert st2.remote == "origin"
+    assert _git(["config", "--get", "tick.remote"], repo).stdout.strip() == "origin"
+
+
+def test_init_rejects_remote_url(repo, tmp_path):
+    """--remote takes a git remote NAME, not a URL. A URL (the common mistake) is
+    rejected with a hint instead of being stored as an unusable remote."""
+    _bare_remote(repo, tmp_path)
+    with pytest.raises(S.TickError, match="looks like a URL"):
+        S.init(cwd=repo, remote="git@github.com:acme/widget.git")
+
+
+def test_init_rejects_unknown_remote_name(repo, tmp_path):
+    with pytest.raises(S.TickError, match="no git remote named 'upstream'"):
+        S.init(cwd=repo, remote="upstream")
+
+
 def test_autopush_backs_up_ledger_branch_to_remote(repo, tmp_path):
     """The fire-and-forget push the verbs make lands the ledger branch on the
     remote. autopush is toggled off for the `add` so the single explicit push we
