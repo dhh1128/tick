@@ -308,9 +308,18 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
     primary_root = _primary_root(common)
 
+    if remote:
+        _validate_remote(remote, cwd)  # reject URLs / unknown names up front, on fresh init and re-init alike
+
     if _config_get("tick.worktree", cwd):
         _ensure_code_gitignore(primary_root)  # self-heal a half-ignored repo; no-op if already present
         _ensure_agents_stanza(primary_root)   # self-heal a missing AGENTS.md stanza; no-op if present
+        if remote:
+            # Honor an explicit --remote on re-init: the original `tick init` may have
+            # run before the remote existed (leaving tick.remote unset), and re-running
+            # with --remote is the natural way to attach/update it. Without this the
+            # argument was silently dropped.
+            _config_set("tick.remote", remote, cwd)
         store = resolve(cwd)  # idempotent
         if install_guard:
             install_pre_push_guard(store)  # reachable on re-init too (e.g. flag forgotten first time); idempotent
@@ -354,12 +363,35 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     return store
 
 
+def _remote_names(cwd):
+    return git(["remote"], cwd, check=False).split()
+
+
 def _detect_remote(cwd):
-    out = git(["remote"], cwd, check=False)
-    remotes = out.split()
+    remotes = _remote_names(cwd)
     if "origin" in remotes:
         return "origin"
     return remotes[0] if remotes else None
+
+
+def _validate_remote(remote, cwd):
+    """`--remote` takes a git remote *name* (e.g. `origin`), not a URL — tick pushes
+    with `git push <name> ...`. Reject anything that isn't a configured remote, with
+    a hint when the value looks like a URL (the most common mistake)."""
+    names = _remote_names(cwd)
+    if remote in names:
+        return
+    looks_like_url = "://" in remote or remote.endswith(".git") or "@" in remote
+    hint = (
+        " — that looks like a URL, but --remote takes a git remote *name* like `origin`"
+        if looks_like_url else ""
+    )
+    known = ", ".join(names) if names else "none configured"
+    raise TickError(
+        f"no git remote named '{remote}' in this repo{hint}\n"
+        f"  known remotes: {known}\n"
+        f"  add one first:  git remote add <name> <url>"
+    )
 
 
 def _remote_has_branch(remote, branch, cwd) -> bool:

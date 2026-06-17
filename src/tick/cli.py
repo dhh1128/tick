@@ -23,7 +23,7 @@ def cmd_init(args) -> int:
     print(f"tick initialized")
     print(f"  store:  {st.worktree}")
     print(f"  branch: {st.branch}")
-    print(f"  remote: {st.remote or '(none — set later with tick.remote)'}")
+    print(f"  remote: {st.remote or '(none — attach later with `git config tick.remote <remote-name>`, or re-run `tick init --remote <remote-name>`)'}")
     print(f"  autopush: {'on' if st.autopush else 'off'} (background backup after each mutation)")
     print(f"  agents: tick stanza added to AGENTS.md (how agents drive the ledger)")
     return 0
@@ -203,7 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("init", help="set up the tick ledger in this repo")
-    sp.add_argument("--remote", help="remote to push the tick branch to (default: origin)")
+    sp.add_argument(
+        "--remote", metavar="NAME",
+        help="git remote NAME (e.g. origin) — not a URL — to push the tick branch to "
+             "(default: auto-detect, prefers origin)",
+    )
     sp.add_argument("--store", help="store path (default: <repo-root>/.tick)")
     sp.add_argument("--install-guard", action="store_true", help="install the pre-push guard")
     sp.set_defaults(func=cmd_init)
