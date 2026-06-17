@@ -498,6 +498,64 @@ def test_resolve_uninitialized_with_no_remote_ledger(repo):
         S.resolve(cwd=repo)
 
 
+def test_heal_recovers_vanished_worktree_from_local_branch(repo):
+    """`rm -rf .tick` deletes the store directory but leaves the local `tick` branch
+    (and all its commits) intact. resolve() must re-check-out the worktree from that
+    branch instead of silently behaving as if the ledger were empty — no remote needed."""
+    st = S.init(cwd=repo)
+    a = S.add(st, "alpha")
+    b = S.add(st, "beta")
+
+    shutil.rmtree(st.worktree)                       # store directory gone; branch survives
+    assert not st.worktree.exists()
+
+    st2 = S.resolve(cwd=repo)                         # heals on resolve, offline
+    assert st2.worktree.is_dir()
+    ids = S.existing_ids(st2)
+    assert {a, b} <= ids
+    assert S.read_tick(st2, a).title == "alpha"
+    # And the store is fully usable again — a mutation succeeds rather than crashing.
+    c = S.add(st2, "gamma")
+    assert (st2.worktree / f"{c}.md").is_file()
+
+
+def test_heal_recovers_from_remote_when_local_branch_is_gone(repo, tmp_path):
+    """The worktree directory AND the local `tick` branch are both gone (e.g. `git
+    worktree remove` + `git branch -D tick`), but the ledger was pushed. resolve()
+    must re-fetch the branch from the remote, re-check-out the worktree, and rewire
+    upstream tracking so sync keeps working."""
+    bare = _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    st = S.resolve(cwd=repo)
+    a = S.add(st, "pushed task")
+    S._autopush(st).wait(timeout=30)                 # ensure the ledger is on the remote
+    assert "refs/heads/tick" in _git(["ls-remote", "--heads", str(bare), "tick"], repo).stdout
+
+    _git(["worktree", "remove", "--force", str(st.worktree)], repo)
+    _git(["branch", "-D", "tick"], repo)
+    assert not st.worktree.exists()
+    assert "tick" not in _git(["branch", "--list", "tick"], repo).stdout
+
+    st2 = S.resolve(cwd=repo)                         # heals by re-fetching from origin
+    assert st2.worktree.is_dir()
+    assert (st2.worktree / f"{a}.md").is_file()
+    # Upstream tracking is rewired so a later sync reconciles cleanly.
+    assert _git(["rev-parse", "--abbrev-ref", "tick@{upstream}"], repo).stdout.strip() == "origin/tick"
+
+
+def test_heal_raises_clearly_when_ledger_is_unrecoverable(repo):
+    """No worktree, no local branch, no remote at all: the data is genuinely gone.
+    resolve() must surface that loudly (not report an empty ledger), and the message
+    must point at the reflog as the last-resort recovery."""
+    st = S.init(cwd=repo)                            # base fixture has no remote
+    S.add(st, "doomed")
+    _git(["worktree", "remove", "--force", str(st.worktree)], repo)
+    _git(["branch", "-D", "tick"], repo)
+
+    with pytest.raises(S.TickError, match="gone and cannot be recovered"):
+        S.resolve(cwd=repo)
+
+
 def test_commits_bypass_host_repo_commit_hooks(repo):
     """The host repo's pre-commit hook (husky/lint-staged running `prettier --check`
     in the wild) must not gate tick's managed commits — neither init's AGENTS.md /
