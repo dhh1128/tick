@@ -431,6 +431,133 @@ def test_unpushed_count_tracks_backlog(repo, tmp_path):
     assert S.unpushed_count(st2) == 1
 
 
+def test_unpushed_count_counts_everything_when_never_pushed(repo, tmp_path):
+    """A ledger whose branch has never reached the remote has no remote-tracking
+    ref to diff against. That used to swallow the failed int() and report 0 — a
+    clean bill of health for a ledger with zero backup. Count the whole branch."""
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)
+    st = S.resolve(cwd=repo)
+    S.add(st, "never leaves this machine")
+    assert not _git(["ls-remote", "--heads", "origin", "tick"], repo).stdout.strip()
+    assert S.unpushed_count(st) == _count(repo, "refs/heads/tick") > 0
+
+
+# ------------------------------------------------------- backup status (SPEC §4)
+
+
+def _backdate(clock_skew):
+    """A clock reading `clock_skew` seconds in the future — ages the real commit
+    timestamps without sleeping or rewriting history."""
+    import time
+    return lambda: time.time() + clock_skew
+
+
+def test_backup_status_ok_when_remote_has_everything(repo, tmp_path):
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)   # drive the push through sync alone
+    st = S.resolve(cwd=repo)
+    S.add(st, "one")
+    S.sync(st)
+    status = S.backup_status(st)
+    assert status.state == "ok"
+    assert status.count == 0
+
+
+def test_backup_status_is_pending_inside_the_grace_window(repo, tmp_path):
+    """The bug that started this: a mutation returns in ~0.1s but its detached
+    push takes seconds, so the tracking ref lags. A backlog whose OLDEST commit is
+    younger than the grace window is a push in flight, not a failure — stay quiet."""
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)   # stand in for a push still in flight
+    st = S.resolve(cwd=repo)
+    S.add(st, "just written")
+    status = S.backup_status(st)
+    assert status.state == "pending"
+    assert status.count > 0
+    assert status.should_warn is False
+
+
+def test_backup_status_goes_stale_past_the_grace_window(repo, tmp_path):
+    """Once the backlog outlives the window, a push really has failed — say so,
+    with the age, so the user can tell a hiccup from a week of silent divergence."""
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)
+    st = S.resolve(cwd=repo)
+    S.add(st, "already safe")
+    S.sync(st)                                        # establishes the tracking ref
+    S.add(st, "stranded")
+    status = S.backup_status(st, clock=_backdate(4 * 3600))
+    assert status.state == "stale"
+    assert status.should_warn is True
+    assert status.age_seconds >= 4 * 3600
+    assert status.remote == "origin"
+
+
+def test_backup_status_grace_window_uses_the_oldest_commit(repo, tmp_path):
+    """Anchor on the OLDEST unpushed commit, not the newest: a fresh mutation on
+    top of a real backlog must not reset the clock and mute a genuine warning."""
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)
+    st = S.resolve(cwd=repo)
+    S.add(st, "already safe")
+    S.sync(st)                                        # establishes the tracking ref
+    S.add(st, "old and stranded")
+    S.add(st, "written just now")
+    status = S.backup_status(st, clock=_backdate(4 * 3600))
+    assert status.state == "stale"          # newest is "now"; oldest is 4h old
+    assert status.count == 2
+
+
+def test_backup_status_flags_a_ledger_that_has_never_been_pushed(repo, tmp_path):
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)
+    _git(["config", "tick.autopush", "false"], repo)
+    st = S.resolve(cwd=repo)
+    S.add(st, "no backup anywhere")
+    status = S.backup_status(st, clock=_backdate(4 * 3600))
+    assert status.state == "never"
+    assert status.should_warn is True
+    assert status.count == _count(repo, "refs/heads/tick")
+
+
+def test_backup_status_flags_a_repo_with_remotes_but_no_tick_remote(repo, tmp_path):
+    """witness-qualifier in the wild: 22 ticks, 48 ledger commits, an `origin` on
+    the repo — but `tick.remote` never set, so autopush was a silent no-op and the
+    backlog gauge returned 0. The one case where a warning matters most."""
+    S.init(cwd=repo)                       # inited before the remote existed
+    _bare_remote(repo, tmp_path)           # remote added to the repo afterwards
+    st = S.resolve(cwd=repo)
+    assert st.remote is None
+    S.add(st, "believed to be backed up")
+    status = S.backup_status(st)
+    assert status.state == "unconfigured"
+    assert status.should_warn is True
+
+
+def test_backup_status_stays_quiet_for_a_repo_with_no_remotes_at_all(repo):
+    """A genuinely local-only repo has nowhere to push. Nagging about it forever
+    would be noise, not information."""
+    S.init(cwd=repo)
+    st = S.resolve(cwd=repo)
+    S.add(st, "local by design")
+    status = S.backup_status(st)
+    assert status.state == "local-only"
+    assert status.should_warn is False
+
+
+def test_format_age_is_human_and_coarse():
+    assert S.format_age(5) == "just now"
+    assert S.format_age(90) == "1m ago"
+    assert S.format_age(4 * 3600) == "4h ago"
+    assert S.format_age(3 * 86400) == "3d ago"
+
+
 def test_sync_round_trips_through_a_real_remote(repo, tmp_path):
     """`tick sync` pushes the ledger and `pull --rebase`s a second machine's
     commits back, reconciling divergence without conflict (one file per tick).

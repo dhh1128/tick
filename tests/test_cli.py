@@ -10,6 +10,7 @@ import pytest
 
 import tick
 from tick import cli
+from tick import store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,6 +159,108 @@ def test_cli_update_unreachable_manifest_is_graceful(tmp_path, capsys):
     # missing/unreachable manifest -> friendly error + exit 1, never a traceback
     assert cli.main(["update", "--check", "--manifest", str(tmp_path / "nope.json")]) == 1
     assert "update server" in capsys.readouterr().err
+
+
+def _bare_remote(repo, tmp_path):
+    bare = tmp_path / "remote.git"
+    _git(["init", "--bare", "-b", "main", str(bare)], tmp_path)
+    _git(["remote", "add", "origin", str(bare)], repo)
+    return bare
+
+
+def _seed(repo, capsys, title="something to lose"):
+    """Init, then pin auto-push off so these tests drive every push explicitly.
+    The order matters: `tick init` sets tick.autopush true, so disabling it first
+    would be silently undone and leave a background push racing the assertions."""
+    cli.main(["init"])
+    _git(["config", "tick.autopush", "false"], repo)
+    cli.main(["add", title])
+    capsys.readouterr()
+
+
+def test_cli_ls_is_quiet_while_a_push_is_still_in_flight(repo, tmp_path, monkeypatch, capsys):
+    """The regression that prompted all this: `tick add` returns in ~0.1s, its
+    detached push takes seconds, and an agent running `tick ls` in the same breath
+    got told the machine was offline. Inside the grace window, say nothing."""
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys)                                # auto-push off == push in flight
+
+    assert cli.main(["ls"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_ls_reports_a_stale_backlog_without_diagnosing_it(repo, tmp_path, monkeypatch, capsys):
+    """Past the grace window the warning is real, but it must report what tick
+    actually knows — a count, a remote, an age — and must NOT assert a cause it
+    never tested ("offline?") or prescribe waiting ("when back online")."""
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys)
+    _git(["push", "origin", "tick"], repo)             # tracking ref exists...
+    cli.main(["add", "written after the last push"])   # ...then a real backlog forms
+    capsys.readouterr()
+    monkeypatch.setattr(store, "GRACE_SECONDS", 0)
+
+    assert cli.main(["ls"]) == 0
+    err = capsys.readouterr().err
+    assert "1 ledger commit" in err
+    assert "origin" in err
+    assert "tick sync" in err
+    assert "offline" not in err.lower()
+    assert "back online" not in err.lower()
+
+
+def test_cli_ls_reports_a_ledger_that_has_never_been_backed_up(repo, tmp_path, monkeypatch, capsys):
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys)
+    monkeypatch.setattr(store, "GRACE_SECONDS", 0)
+
+    assert cli.main(["ls"]) == 0
+    err = capsys.readouterr().err
+    assert "never been backed up" in err
+    assert "tick sync" in err
+
+
+def test_cli_ls_reports_a_ledger_with_no_backup_remote_configured(repo, tmp_path, monkeypatch, capsys):
+    """The silent case: repo has an `origin`, but `tick.remote` was never set, so
+    autopush is a no-op. Name the fix, since `tick sync` alone can't help here."""
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys)                                # inited with no remote
+    _bare_remote(repo, tmp_path)                       # remote added afterwards
+
+    assert cli.main(["ls"]) == 0
+    err = capsys.readouterr().err
+    assert "no backup remote" in err
+    assert "tick.remote" in err
+
+
+def test_cli_ls_says_nothing_in_a_repo_with_no_remotes(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys)
+    assert cli.main(["ls"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_ls_hint_survives_a_filter_that_hides_every_tick(repo, tmp_path, monkeypatch, capsys):
+    """The hint keys off whether the ledger holds ticks at all, not off whether
+    this particular listing rendered any — closing your last tick must not silence
+    a real backup warning."""
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+    cli.main(["init"])
+    _git(["config", "tick.autopush", "false"], repo)
+    cli.main(["add", "will be closed"])
+    tid = re.search(r"~([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)
+    cli.main(["off", tid])
+    capsys.readouterr()
+    monkeypatch.setattr(store, "GRACE_SECONDS", 0)
+
+    assert cli.main(["ls"]) == 0
+    out, err = capsys.readouterr()
+    assert "(no ticks)" in out
+    assert "never been backed up" in err
 
 
 def test_cli_uninitialized_errors(repo, monkeypatch, capsys):

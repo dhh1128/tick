@@ -15,6 +15,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,12 @@ from tick import core
 
 BRANCH = "tick"
 LOCK_NAME = ".tick.lock"
+
+# How long a backlog may sit unpushed before it counts as a real failure rather
+# than a push still in flight. Auto-push is detached and a mutation returns in
+# ~0.1s, but the push itself takes seconds over the network — so the tracking ref
+# legitimately lags every write. Anything younger than this is assumed in flight.
+GRACE_SECONDS = 30
 
 TICK_BRANCH_README = """\
 # tick ledger
@@ -480,22 +487,115 @@ def _autopush(store: Store) -> subprocess.Popen | None:
     )
 
 
-def unpushed_count(store: Store) -> int:
-    """Ledger commits not yet on the remote-tracking ref — a cheap, network-free
-    backlog gauge (git advances refs/remotes/<remote>/<branch> on a successful
-    push, so a nonzero count means auto-push has been failing, e.g. offline).
-    Returns 0 when there's no remote or no remote-tracking ref yet."""
-    if not store.remote:
-        return 0
-    out = git(
-        ["rev-list", "--count", f"refs/remotes/{store.remote}/{store.branch}..HEAD"],
-        store.worktree,
-        check=False,
+@dataclass(frozen=True)
+class BackupStatus:
+    """What tick actually knows about the ledger's off-machine backup.
+
+    Deliberately reports observations, not a diagnosis: the gauge is network-free,
+    so it can see that commits aren't on the remote-tracking ref but never why.
+    `state` is one of:
+
+      ok            everything local is on the remote
+      pending       a backlog younger than the grace window — a push is in flight
+      stale         a backlog that outlived the window — a push really did fail
+      never         a configured remote that has never received this ledger
+      unconfigured  the repo has remotes but `tick.remote` is unset, so auto-push
+                    is a silent no-op and nothing is backed up anywhere
+      local-only    the repo has no remotes at all — nowhere to push, by design
+    """
+
+    state: str
+    count: int
+    age_seconds: int | None
+    remote: str | None
+
+    @property
+    def should_warn(self) -> bool:
+        return self.state in ("stale", "never", "unconfigured")
+
+
+def _tracking_ref(store: Store) -> str:
+    return f"refs/remotes/{store.remote}/{store.branch}"
+
+
+def _has_tracking_ref(store: Store) -> bool:
+    return bool(
+        git(["rev-parse", "--verify", "--quiet", _tracking_ref(store)], store.worktree, check=False)
     )
+
+
+def _unpushed_range(store: Store, tracked: bool) -> str:
+    """The rev range holding ledger commits the remote isn't known to have. With
+    no remote-tracking ref (the branch has never been pushed) that's the whole
+    branch — the case a bare `A..HEAD` can't express and used to silently drop.
+
+    `tracked` is passed in rather than probed here so one caller can resolve the
+    range ONCE. Re-probing mid-call is a live race: auto-push is detached and can
+    land between two calls, so the count and the age would describe different
+    ranges (observed as a real backlog reported with an unknown age)."""
+    return f"{_tracking_ref(store)}..HEAD" if tracked else "HEAD"
+
+
+def _count_range(store: Store, rng: str) -> int:
+    out = git(["rev-list", "--count", rng], store.worktree, check=False)
     try:
         return int(out)
     except ValueError:
-        return 0  # remote-tracking ref absent (never pushed) — don't guess
+        return 0
+
+
+def unpushed_count(store: Store) -> int:
+    """Ledger commits not known to be on the remote — a cheap, network-free backlog
+    gauge (git advances refs/remotes/<remote>/<branch> on a successful push). A
+    never-pushed branch counts every commit: zero backup is the loudest case, not
+    the quietest. Returns 0 only when no remote is configured."""
+    if not store.remote:
+        return 0
+    return _count_range(store, _unpushed_range(store, _has_tracking_ref(store)))
+
+
+def _oldest_age(store: Store, rng: str, now: float) -> int | None:
+    """Seconds since the OLDEST commit in `rng` was committed, or None if the range
+    is empty. Anchoring on the oldest (not the newest) is what keeps a fresh
+    mutation from resetting the clock and muting a genuine day-old backlog."""
+    out = git(["log", "--format=%ct", rng], store.worktree, check=False)
+    stamps = [int(s) for s in out.split() if s.isdigit()]
+    return max(0, int(now - min(stamps))) if stamps else None
+
+
+def backup_status(store: Store, clock=time.time, grace: int | None = None) -> BackupStatus:
+    """Classify the ledger's backup state without touching the network (SPEC §4)."""
+    grace = GRACE_SECONDS if grace is None else grace
+    if not store.remote:
+        # No push target. Distinguish "this repo is local by design" (nothing to
+        # say) from "there IS a remote, tick just isn't wired to it" — the latter
+        # means every mutation's auto-push has been a silent no-op.
+        if not _remote_names(store.code_root):
+            return BackupStatus("local-only", 0, None, None)
+        return BackupStatus("unconfigured", _count_range(store, "HEAD"), None, None)
+    tracked = _has_tracking_ref(store)
+    rng = _unpushed_range(store, tracked)
+    count = _count_range(store, rng)
+    if count == 0:
+        return BackupStatus("ok", 0, None, store.remote)
+    age = _oldest_age(store, rng, clock())
+    if age is not None and age < grace:
+        return BackupStatus("pending", count, age, store.remote)
+    return BackupStatus("stale" if tracked else "never", count, age, store.remote)
+
+
+def format_age(seconds: int | None) -> str:
+    """Coarse, human age for a backlog. Precision past the unit is noise here —
+    what matters is telling a few-second hiccup from a week of divergence."""
+    if seconds is None:
+        return "unknown"
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
 
 
 # ----------------------------------------------------------------------- CRUD

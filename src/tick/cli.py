@@ -83,10 +83,39 @@ def cmd_reopen(args) -> int:
     return 0
 
 
+def _backup_hint(status) -> str | None:
+    """Render a backup warning, or None when there's nothing worth saying.
+
+    Reports only what the gauge measured — a count, a remote, an age — and names
+    the fix. It must not guess at a cause: the check is network-free, so it cannot
+    know whether a push failed, is still running, or was rejected. The old wording
+    ("auto-push offline?" / "run `tick sync` when back online") asserted a cause it
+    had never tested, and agents relayed it to the user as fact."""
+    if not status.should_warn:
+        return None
+    plural = "" if status.count == 1 else "s"
+    if status.state == "unconfigured":
+        return (
+            "note: this ledger has no backup remote — it exists only on this machine.\n"
+            "  attach one:  git config tick.remote origin"
+        )
+    if status.state == "never":
+        return (
+            f"note: this ledger has never been backed up — "
+            f"{status.count} commit{plural} exist only on this machine.\n"
+            f"  push it:  tick sync"
+        )
+    return (
+        f"note: {status.count} ledger commit{plural} not backed up to {status.remote} "
+        f"(oldest {store.format_age(status.age_seconds)}) — run `tick sync` to retry."
+    )
+
+
 def cmd_ls(args) -> int:
     st = store.resolve()
+    all_ticks = store.list_ticks(st)
     ticks = core.filter_ticks(
-        store.list_ticks(st),
+        all_ticks,
         include_closed=args.all,
         only_closed=args.closed,
         kind=args.kind,
@@ -94,17 +123,17 @@ def cmd_ls(args) -> int:
     )
     if not ticks:
         print("(no ticks)")
-        return 0
     for t in ticks:
         suffix = "  (closed)" if not t.is_open else ""
         print(f"{t.id}  {t.kind:5}  {t.title}{suffix}")
-    pending = store.unpushed_count(st)
-    if pending:
-        print(
-            f"note: {pending} ledger commit(s) not yet backed up "
-            f"(auto-push offline?) — run `tick sync` when back online",
-            file=sys.stderr,
-        )
+    # Key the backup hint off whether the ledger holds ticks at all, not off what
+    # this listing rendered: a filter that hides everything (or closing your last
+    # tick) must not silence a real warning. A ledger with no ticks has nothing to
+    # lose, so it stays quiet.
+    if all_ticks:
+        hint = _backup_hint(store.backup_status(st))
+        if hint:
+            print(hint, file=sys.stderr)
     return 0
 
 

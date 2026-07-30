@@ -109,7 +109,7 @@ mark (`tick show <id>`).
 | `tick grep <text>` | Search tick titles/bodies. |
 | `tick refs <id>` | Find the tick's mark sites in the code. |
 | `tick orphans` | Lint: marks with no tick, open ticks with no mark. |
-| `tick sync` | `pull --rebase` then push the `tick` branch (mutations already auto-push in the background; `sync` pulls others' changes and flushes any offline backlog). |
+| `tick sync` | `pull --rebase` then push the `tick` branch (mutations already auto-push in the background; `sync` pulls others' changes and flushes any deferred backlog). |
 | `tick link` | Add a `.tick` symlink in an additional worktree. |
 | `tick update [--check]` | Self-update to the latest release (verifies a sha256 before replacing the binary); `--check` only reports. |
 | `tick --version` | Print the installed version. |
@@ -127,6 +127,14 @@ itself up with no manual step — offline just defers to the next mutation or
 `tick sync`. Turn it off with `git config tick.autopush false`. `tick sync` is
 the explicit pull-and-flush (e.g. to pull another machine's changes). See
 [`SPEC.md`](SPEC.md) §3–4.
+
+Because that push is detached, it is still running when the command returns, so
+`tick ls` stays quiet about a backlog younger than 30 seconds — that's a push in
+flight, not a failure. Past the window it says how many commits are unbacked, to
+which remote, and how old the oldest is; it never guesses *why*, since the check
+never touches the network. Two states get their own message: a ledger that has
+**never** reached its remote, and one whose repo has remotes but no `tick.remote`
+set (auto-push is a silent no-op there — the hint tells you to configure it).
 
 ## Agents
 

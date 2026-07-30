@@ -118,8 +118,20 @@ appearing as an ignorable branch named `tick`. `tick init` records `tick.remote`
 best-effort background `git push` of the ledger branch (`tick.autopush`, default on — set off with
 `git config tick.autopush false`). It never blocks or fails the write; offline/rejected pushes just defer
 to the next mutation. `tick sync` is the explicit full reconcile — `git pull --rebase` then
-`git push <remote> tick` — used to **pull** another machine's changes and to flush any deferred backlog
-(surfaced as an "N not yet backed up" hint on `tick ls`).
+`git push <remote> tick` — used to **pull** another machine's changes and to flush any deferred backlog.
+
+**Backup hint on `tick ls`.** The backlog gauge is network-free (it diffs `HEAD` against
+`refs/remotes/<remote>/<branch>`), so it can see *that* commits aren't backed up but never *why*. It
+therefore reports observations and never diagnoses a cause. States: `ok`; `pending` (a backlog younger
+than a 30s grace window — auto-push is detached and a mutation returns in ~0.1s while its push takes
+seconds, so the tracking ref legitimately lags every write; silent); `stale` (a backlog past the window,
+reported with a count and the age of its **oldest** commit — anchoring on the oldest keeps a fresh
+mutation from resetting the clock and muting a real day-old backlog); `never` (a configured remote that
+has never received the ledger — counts the whole branch, since zero backup is the loudest case, not the
+quietest); `unconfigured` (the repo has remotes but `tick.remote` is unset, so every auto-push has been a
+silent no-op — the one state `tick sync` can't fix, so the hint names the `git config` instead);
+`local-only` (no remotes at all — nothing to say). The hint keys off whether the ledger holds ticks at
+all, not off what the current listing rendered, so a filter that hides everything can't silence it.
 
 To keep `sync` from paying the code repo's test tax, `tick init` (with confirmation) installs a guard at
 the **top of the repo's `pre-push` hook**: *if every ref being pushed is `refs/heads/tick`, `exit 0`.*
@@ -407,6 +419,14 @@ zipapp is the primary artifact.
 - **Automatic backup (`6pyc`):** mutations fire a best-effort, detached background `git push` of the
   ledger branch (`tick.autopush`, default on), so backup needs no manual `tick sync`. Kept off the write
   path to preserve the instant/offline write; `sync` stays as the explicit pull+flush.
+- **The backup hint reports, it does not diagnose.** The gauge is network-free, so "not on the remote"
+  is all it can observe; the original wording ("auto-push offline? — run `tick sync` when back online")
+  asserted a cause it had never tested. Because the push is detached and outlives the CLI, the *normal*
+  post-mutation state is a lagging tracking ref — so a bare nonzero count fires on a perfectly online
+  machine, and agents relayed the invented diagnosis to the user as fact. Fixed with a grace window
+  (`pending` vs `stale`) anchored on the oldest unpushed commit, plus explicit `never` / `unconfigured`
+  states for the inverse failure: the old gauge returned 0 both when no remote-tracking ref existed and
+  when `tick.remote` was unset, staying silent for the two ledgers with *no* backup at all.
 - **Hosting:** `github.com/dhh1128/tick` (personal), not `provenant-dev`.
 - **Distribution:** single-file zipapp built to `dist/tick`, published to GitHub Releases by
   `scripts/release.py` + the `release` workflow, curl-installable to `~/.local/bin/tick` (repo public);
