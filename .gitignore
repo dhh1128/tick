@@ -11,3 +11,8 @@ build/
 # tick's own ledger worktree, created by dogfooding `tick init`
 /.tick
 .tick.lock
+
+# uv writes this when the project is run/installed with `uv run` / `uv tool
+# install .`; tick has zero runtime deps, so the lock pins nothing worth keeping
+# and its churn would break release.py's clean-tree check.
+uv.lock
