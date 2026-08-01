@@ -267,3 +267,44 @@ def test_cli_uninitialized_errors(repo, monkeypatch, capsys):
     monkeypatch.chdir(repo)
     assert cli.main(["ls"]) == 1
     assert "not initialized" in capsys.readouterr().err
+
+
+def _count(repo):
+    return int(_git(["rev-list", "--count", "HEAD"], repo).stdout.strip())
+
+
+def test_cli_plain_init_reports_exclude_and_makes_no_commit(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    before = _count(repo)
+    assert cli.main(["init"]) == 0
+    out = capsys.readouterr().out
+    assert ".git/info/exclude" in out
+    assert "agents:" not in out                 # stanza is opt-in, not advertised as done
+    assert _count(repo) == before               # nothing committed on the code branch
+
+
+def test_cli_init_agents_flag_commits_stanza(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    before = _count(repo)
+    assert cli.main(["init", "--agents"]) == 0
+    assert "agents:" in capsys.readouterr().out
+    assert "<<< tick stanza" in (repo / "AGENTS.md").read_text()
+    assert _count(repo) - before == 1
+
+
+def test_cli_migrate_ignore(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    cli.main(["init"])
+    capsys.readouterr()
+    # simulate a pre-1.2 committed .gitignore ignore
+    (repo / ".gitignore").write_text("/.tick\n.tick.lock\n")
+    _git(["add", ".gitignore"], repo)
+    _git(["commit", "-m", "legacy ignore"], repo)
+
+    assert cli.main(["migrate-ignore"]) == 0
+    assert "migrated" in capsys.readouterr().out
+    assert "/.tick" not in (repo / ".gitignore").read_text()
+
+    # second run is an idempotent no-op
+    assert cli.main(["migrate-ignore"]) == 0
+    assert "nothing to migrate" in capsys.readouterr().out

@@ -19,13 +19,28 @@ def _strip(id: str) -> str:
 
 
 def cmd_init(args) -> int:
-    st = store.init(remote=args.remote, store_path=args.store, install_guard=args.install_guard)
+    st = store.init(
+        remote=args.remote, store_path=args.store, install_guard=args.install_guard,
+        inject_agents=args.agents, force_host=args.force_host,
+    )
     print(f"tick initialized")
     print(f"  store:  {st.worktree}")
     print(f"  branch: {st.branch}")
     print(f"  remote: {st.remote or '(none — attach later with `git config tick.remote <remote-name>`, or re-run `tick init --remote <remote-name>`)'}")
     print(f"  autopush: {'on' if st.autopush else 'off'} (background backup after each mutation)")
-    print(f"  agents: tick stanza added to AGENTS.md (how agents drive the ledger)")
+    print(f"  ignore: .tick ignored via .git/info/exclude (no commit on your branch)")
+    if args.agents:
+        print(f"  agents: tick stanza added to AGENTS.md (how agents drive the ledger)")
+    return 0
+
+
+def cmd_migrate_ignore(args) -> int:
+    changed = store.migrate_ignore(force_host=args.force_host)
+    if changed:
+        print("migrated: .tick now ignored via .git/info/exclude; "
+              "removed the committed /.tick line from .gitignore")
+    else:
+        print("nothing to migrate: .tick is already ignored via .git/info/exclude")
     return 0
 
 
@@ -239,7 +254,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--store", help="store path (default: <repo-root>/.tick)")
     sp.add_argument("--install-guard", action="store_true", help="install the pre-push guard")
+    sp.add_argument(
+        "--agents", action="store_true",
+        help="also add the tick stanza to AGENTS.md (teaches coding agents to drive "
+             "the ledger) — a docs commit on the current branch; off by default",
+    )
+    sp.add_argument(
+        "--force-host", action="store_true",
+        help="allow tick's host-repo commits (the AGENTS.md stanza) even if the "
+             "working tree is dirty or HEAD is detached",
+    )
     sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser(
+        "migrate-ignore",
+        help="move the ledger ignore from a committed .gitignore line to .git/info/exclude",
+    )
+    sp.add_argument(
+        "--force-host", action="store_true",
+        help="allow the .gitignore commit even if the working tree is dirty or HEAD is detached",
+    )
+    sp.set_defaults(func=cmd_migrate_ignore)
 
     sp = sub.add_parser("add", help="add a tick; prints the mark to paste into code")
     sp.add_argument("title")
@@ -309,6 +344,12 @@ def main(argv=None) -> int:
     except store.TickError as e:
         print(f"tick: {e}", file=sys.stderr)
         return 1
+    # One-time nudge to migrate a pre-1.2 committed-.gitignore ledger ignore to
+    # .git/info/exclude. Best-effort and self-silencing (see store); never breaks a command.
+    try:
+        store.maybe_notify_ignore_migration()
+    except Exception:
+        pass
     # pip-style nag: only on read commands, throttled + offline-safe (see update.py).
     try:
         update.maybe_notify_update(args.cmd, no_check=args.no_update_check)

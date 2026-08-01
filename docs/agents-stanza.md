@@ -1,10 +1,13 @@
 # AGENTS.md / CLAUDE.md stanza for repos that use tick
 
-`tick init` now appends this stanza to the target repo's `AGENTS.md` automatically
-(idempotently — re-running `init` won't duplicate it; an existing `AGENTS.md` is
-preserved and the stanza appended). The canonical text lives in code as
-`store._TICK_STANZA`. Use the copy below if you instead want to paste it into a
-`CLAUDE.md`, or into an `AGENTS.md` that predates a `tick`-injected one.
+`tick init --agents` appends this stanza to the target repo's `AGENTS.md`
+(idempotently — re-running won't duplicate it; an existing `AGENTS.md` is
+preserved and the stanza appended). It is **opt-in**: a plain `tick init` never
+touches `AGENTS.md`, and when one exists but `--agents` was omitted, `init` just
+prints a one-line recommendation. The commit is guarded — `init` refuses to write
+it onto a dirty or detached primary worktree unless you pass `--force-host`. The
+canonical text lives in code as `store._TICK_STANZA`. Use the copy below if you
+instead want to paste it into a `CLAUDE.md`, or into an `AGENTS.md` by hand.
 
 Note: the example id below is shown **without** its `~` sigil on purpose. The stanza
 lands in a tracked file that is itself scanned for marks, so a literal example mark

@@ -41,8 +41,9 @@ A **tick mark** is `~` + a 4-char id whose first character is a digit, e.g.
   mark(s)** from the source (`tick off` lists where they are).
 - When you add a tick that belongs to a code location, add the `~<id>` mark there.
 - If `tick ls` errors with "not initialized", the repo hasn't been set up — tell
-  the user to run `tick init` (don't run it yourself without asking; it makes a
-  commit and a worktree).
+  the user to run `tick init` (don't run it yourself without asking; it creates a
+  worktree). A plain `tick init` makes no commit on the code branch; `--agents`
+  (opt-in) adds an `AGENTS.md` stanza in one guarded commit.
 - A tick that turns out to be a real design decision should graduate into the
   project's `this.i` / design docs when closed — mention this to the user.
 - Never invent ids; only use ids returned by `tick add` or found in the ledger.

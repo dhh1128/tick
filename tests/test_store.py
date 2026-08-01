@@ -34,6 +34,12 @@ def _count(repo, ref="HEAD"):
     return int(_git(["rev-list", "--count", ref], repo).stdout.strip())
 
 
+def _exclude(repo):
+    """The repo-local untracked ignore file tick now writes to (git common dir)."""
+    p = repo / ".git" / "info" / "exclude"
+    return p.read_text() if p.exists() else ""
+
+
 def test_init_creates_branch_worktree_config(repo):
     st = S.init(cwd=repo)
     assert st.worktree == repo / ".tick"
@@ -41,7 +47,9 @@ def test_init_creates_branch_worktree_config(repo):
     assert "tick" in _git(["branch", "--list", "tick"], repo).stdout
     # Stored relative to the repo root (not absolute) so a move/rename can't strand it.
     assert _git(["config", "--get", "tick.worktree"], repo).stdout.strip() == ".tick"
-    assert "/.tick" in (repo / ".gitignore").read_text()
+    # Ignored via the untracked .git/info/exclude, NOT a committed .gitignore line.
+    assert "/.tick" in _exclude(repo) and S.LOCK_NAME in _exclude(repo)
+    assert not (repo / ".gitignore").exists()
     # idempotent
     assert S.init(cwd=repo).worktree == st.worktree
 
@@ -82,15 +90,23 @@ def test_legacy_absolute_config_migrates_on_resolve(repo, tmp_path):
     assert _git(["config", "--get", "tick.worktree"], dest).stdout.strip() == ".tick"
 
 
-def test_init_adds_gitignore_and_agents_stanza_in_two_code_commits(repo):
+def test_plain_init_makes_no_host_branch_commit(repo):
+    """The custos-incident fix: a plain `tick init` must not commit anything to the
+    host's code branch. Ignoring is done via the untracked .git/info/exclude, and the
+    AGENTS.md stanza is opt-in — so the code branch's tip is exactly where it started."""
     before = _count(repo)
+    head_before = _git(["rev-parse", "HEAD"], repo).stdout.strip()
     S.init(cwd=repo)
-    # one commit for the /.tick .gitignore, one for the AGENTS.md stanza
-    assert _count(repo) - before == 2
+    assert _count(repo) - before == 0
+    assert _git(["rev-parse", "HEAD"], repo).stdout.strip() == head_before
+    assert not (repo / "AGENTS.md").exists()      # stanza is opt-in
+    assert "/.tick" in _exclude(repo)
 
 
-def test_init_injects_agents_stanza(repo):
-    S.init(cwd=repo)
+def test_init_with_agents_injects_stanza_in_one_commit(repo):
+    before = _count(repo)
+    S.init(cwd=repo, inject_agents=True)
+    assert _count(repo) - before == 1            # only the AGENTS.md docs commit
     agents = repo / "AGENTS.md"
     assert agents.exists()
     text = agents.read_text()
@@ -101,12 +117,25 @@ def test_init_injects_agents_stanza(repo):
 
 
 def test_init_agents_stanza_is_idempotent(repo):
-    S.init(cwd=repo)
+    S.init(cwd=repo, inject_agents=True)
     first = (repo / "AGENTS.md").read_text()
     count_after_first = _count(repo)
-    S.init(cwd=repo)  # idempotent re-init
+    S.init(cwd=repo, inject_agents=True)  # idempotent re-init
     assert (repo / "AGENTS.md").read_text() == first  # no duplication
     assert _count(repo) == count_after_first  # no extra commit
+
+
+def test_init_without_agents_recommends_it_when_agents_md_exists(repo, capsys):
+    """If the repo already keeps an AGENTS.md but --agents wasn't passed, nudge toward
+    it (on stderr) — without touching the file or committing anything."""
+    (repo / "AGENTS.md").write_text("# AGENTS\n\nexisting guidance\n")
+    _git(["add", "AGENTS.md"], repo)
+    _git(["commit", "-m", "add AGENTS.md"], repo)
+    before = _count(repo)
+    S.init(cwd=repo)
+    assert "tick init --agents" in capsys.readouterr().err
+    assert S.STANZA_BEGIN not in (repo / "AGENTS.md").read_text()  # untouched
+    assert _count(repo) == before                                  # no commit
 
 
 def test_injected_stanza_contains_no_literal_mark():
@@ -133,9 +162,10 @@ def test_injected_stanza_is_prettier_clean_by_construction():
 
 
 def test_orphans_clean_after_init_then_detects_real_mark(repo):
-    """A fresh init (which injects the stanza into AGENTS.md) reports no orphans.
-    A genuine mark the user later adds to AGENTS.md is detected like any other."""
-    st = S.init(cwd=repo)
+    """A fresh init that injects the stanza into AGENTS.md reports no orphans (the
+    example id in the stanza is deliberately sigil-less). A genuine mark the user
+    later adds to AGENTS.md is detected like any other."""
+    st = S.init(cwd=repo, inject_agents=True)
     marks_without_tick, _ = S.orphans(st)
     assert marks_without_tick == set()  # no phantom from the injected stanza
     with open(repo / "AGENTS.md", "a") as f:
@@ -149,43 +179,144 @@ def test_init_preserves_existing_agents_md(repo):
     (repo / "AGENTS.md").write_text(existing)
     _git(["add", "AGENTS.md"], repo)
     _git(["commit", "-m", "add AGENTS.md"], repo)
-    S.init(cwd=repo)
+    S.init(cwd=repo, inject_agents=True)
     text = (repo / "AGENTS.md").read_text()
     assert existing in text  # original content untouched
     assert S.STANZA_BEGIN in text  # stanza appended
 
 
-def test_init_from_linked_worktree_ignores_tick_in_primary(repo, tmp_path):
-    """Running `tick init` from a *linked* worktree must still add `/.tick` to the
-    PRIMARY worktree's tracked .gitignore — that's where the ledger physically
-    lives (anchored on the common dir). Regression: init used to commit the ignore
-    onto the worktree it was invoked from, so when run from a feature worktree the
-    primary branch (e.g. main) never got `/.tick`, and a later `git add .` on main
-    staged `.tick` as an embedded-repo gitlink."""
+def test_init_from_linked_worktree_ignores_tick_via_shared_exclude(repo, tmp_path):
+    """Running `tick init` from a *linked* worktree must ignore `/.tick` via the
+    shared `.git/info/exclude` (in the common dir), which covers every worktree and
+    branch — where the ledger physically lives is the primary root. The exclude
+    mechanism makes no commit on any branch at all, so the feature branch stays
+    clean and the primary branch never stages `.tick` as an embedded gitlink."""
     wt = tmp_path / "feature-wt"
     _git(["worktree", "add", "-b", "feature", str(wt)], repo)
+    before_main = _git(["rev-parse", "main"], repo).stdout.strip()
 
     S.init(cwd=wt)
 
     # The store lands at the primary root regardless of where init ran.
     assert (repo / ".tick").is_dir()
-    # ...and the ignore lands on the primary worktree, not the feature branch.
-    primary_gi = repo / ".gitignore"
-    assert primary_gi.exists() and "/.tick" in primary_gi.read_text()
+    # ...ignored via the common-dir exclude, and NO commit on either branch.
+    assert "/.tick" in _exclude(repo)
+    assert not (repo / ".gitignore").exists()
+    assert _git(["rev-parse", "main"], repo).stdout.strip() == before_main
 
 
-def test_reinit_self_heals_missing_gitignore(repo):
-    """A repo left half-initialized by the old linked-worktree bug (ledger present,
-    but `/.tick` missing from the primary .gitignore) is repaired by re-running
-    `tick init` — the idempotent path self-heals instead of short-circuiting."""
+def test_reinit_self_heals_missing_exclude(repo):
+    """A repo whose `.git/info/exclude` lost the `/.tick` entry (e.g. hand-edited) is
+    repaired by re-running `tick init` — the idempotent path re-adds it instead of
+    short-circuiting, and still makes no commit."""
     S.init(cwd=repo)
-    gi = repo / ".gitignore"
-    gi.write_text(gi.read_text().replace("/.tick\n", ""))   # simulate the damaged state
-    _git(["commit", "-am", "drop tick ignore"], repo)
-    assert "/.tick" not in gi.read_text()
+    excl = repo / ".git" / "info" / "exclude"
+    excl.write_text(excl.read_text().replace("/.tick\n", ""))  # simulate the damaged state
+    assert "/.tick" not in _exclude(repo)
 
+    before = _count(repo)
     S.init(cwd=repo)
-    assert "/.tick" in gi.read_text()
+    assert "/.tick" in _exclude(repo)
+    assert _count(repo) == before  # self-heal is commit-free
+
+
+# ---------------------------------------------------- host-repo mutation guardrail
+
+
+def test_agents_commit_refused_on_dirty_working_tree(repo):
+    """A host-repo commit (the --agents stanza) is refused when the primary worktree
+    has uncommitted work, so tick can't entangle its bookkeeping with in-flight edits."""
+    (repo / "wip.txt").write_text("half-done work\n")   # untracked outstanding change
+    with pytest.raises(S.TickError, match="uncommitted changes"):
+        S.init(cwd=repo, inject_agents=True)
+    assert not (repo / "AGENTS.md").exists()            # nothing committed
+
+
+def test_agents_commit_refused_on_detached_head(repo):
+    _git(["checkout", "--detach"], repo)
+    with pytest.raises(S.TickError, match="detached HEAD"):
+        S.init(cwd=repo, inject_agents=True)
+
+
+def test_force_host_overrides_dirty_tree_guard(repo):
+    (repo / "wip.txt").write_text("half-done work\n")
+    S.init(cwd=repo, inject_agents=True, force_host=True)   # override the guard
+    assert S.STANZA_BEGIN in (repo / "AGENTS.md").read_text()
+
+
+def test_ignore_exclude_is_not_gated_by_dirty_tree(repo):
+    """The exclude write makes no commit and touches no tracked file, so a dirty tree
+    must NOT block a plain init (only host-branch *commits* are guarded)."""
+    (repo / "wip.txt").write_text("outstanding\n")
+    S.init(cwd=repo)                                    # no --agents => no commit, no guard
+    assert "/.tick" in _exclude(repo)
+
+
+# ------------------------------------------------------- migrate-ignore (pre-1.2)
+
+
+def _seed_legacy_gitignore(repo):
+    """Reproduce a pre-1.2 ledger ignore: `/.tick` + lock committed to .gitignore."""
+    (repo / ".gitignore").write_text("/.tick\n" + S.LOCK_NAME + "\n")
+    _git(["add", ".gitignore"], repo)
+    _git(["commit", "-m", "chore: ignore tick ledger worktree (/.tick)"], repo)
+
+
+def test_migrate_ignore_moves_gitignore_line_to_exclude(repo):
+    S.init(cwd=repo)
+    _seed_legacy_gitignore(repo)
+    before = _count(repo)
+
+    changed = S.migrate_ignore(cwd=repo)
+    assert changed is True
+    # entry moved: gone from tracked .gitignore, present in the untracked exclude
+    assert "/.tick" not in (repo / ".gitignore").read_text()
+    assert "/.tick" in _exclude(repo) and S.LOCK_NAME in _exclude(repo)
+    assert _count(repo) - before == 1                  # exactly one .gitignore commit
+
+
+def test_migrate_ignore_preserves_other_gitignore_lines(repo):
+    S.init(cwd=repo)
+    (repo / ".gitignore").write_text("node_modules/\n/.tick\n" + S.LOCK_NAME + "\ndist/\n")
+    _git(["add", ".gitignore"], repo)
+    _git(["commit", "-m", "ignores"], repo)
+
+    S.migrate_ignore(cwd=repo)
+    kept = (repo / ".gitignore").read_text()
+    assert "node_modules/" in kept and "dist/" in kept
+    assert "/.tick" not in kept and S.LOCK_NAME not in kept
+
+
+def test_migrate_ignore_is_noop_when_already_on_exclude(repo):
+    S.init(cwd=repo)                                    # already the new mechanism
+    before = _count(repo)
+    assert S.migrate_ignore(cwd=repo) is False
+    assert _count(repo) == before
+
+
+def test_migrate_ignore_guarded_by_dirty_tree(repo):
+    S.init(cwd=repo)
+    _seed_legacy_gitignore(repo)
+    (repo / "wip.txt").write_text("outstanding\n")
+    with pytest.raises(S.TickError, match="uncommitted changes"):
+        S.migrate_ignore(cwd=repo)
+    assert "/.tick" in (repo / ".gitignore").read_text()    # untouched
+
+
+def test_migration_notice_fires_once_then_goes_quiet(repo, capsys):
+    S.init(cwd=repo)
+    _seed_legacy_gitignore(repo)
+
+    S.maybe_notify_ignore_migration(cwd=repo)
+    assert "tick migrate-ignore" in capsys.readouterr().err   # first run: nudged
+    S.maybe_notify_ignore_migration(cwd=repo)
+    assert capsys.readouterr().err == ""                      # second run: silent
+
+
+def test_migration_notice_silent_when_already_migrated(repo, capsys):
+    S.init(cwd=repo)                                    # fresh init is already on exclude
+    S.maybe_notify_ignore_migration(cwd=repo)
+    assert capsys.readouterr().err == ""
 
 
 def test_add_creates_file_and_one_tick_commit(repo):
@@ -710,16 +841,16 @@ def test_heal_raises_clearly_when_ledger_is_unrecoverable(repo):
 
 def test_commits_bypass_host_repo_commit_hooks(repo):
     """The host repo's pre-commit hook (husky/lint-staged running `prettier --check`
-    in the wild) must not gate tick's managed commits — neither init's AGENTS.md /
-    .gitignore commits nor any later ledger mutation (which commits in a worktree
-    that shares the repo's .git/hooks). tick commits with --no-verify."""
+    in the wild) must not gate tick's managed commits — neither the opt-in AGENTS.md
+    stanza commit nor any later ledger mutation (which commits in a worktree that
+    shares the repo's .git/hooks). tick commits with --no-verify."""
     pc = repo / ".git" / "hooks" / "pre-commit"
     pc.write_text("#!/bin/sh\necho 'prettier --check: AGENTS.md' >&2\nexit 1\n")
     pc.chmod(0o755)
 
-    st = S.init(cwd=repo)                       # dies on the AGENTS.md commit without --no-verify
+    st = S.init(cwd=repo, inject_agents=True)   # dies on the AGENTS.md commit without --no-verify
     assert (repo / "AGENTS.md").read_text().count(S.STANZA_BEGIN) == 1
-    assert "/.tick" in (repo / ".gitignore").read_text()
+    assert "/.tick" in _exclude(repo)
     aid = S.add(st, "still works")              # ledger commit also bypasses the hook
     assert (st.worktree / f"{aid}.md").is_file()
 

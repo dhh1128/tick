@@ -94,11 +94,21 @@ stable primary clone.
 
 ### 3.3 Ignoring, symlinks, and grep
 
-- **One tracked `.gitignore` entry, `/.tick`, committed once** at `tick init`. This is the *only*
-  change ever made to a code branch, and it matches both the real `.tick/` dir in the primary checkout
-  and the `.tick` symlink in any other worktree (`.gitignore` is tracked, so it's present on every
-  branch). We use the tracked `.gitignore` (not `.git/info/exclude`) precisely because one entry then
-  covers all worktrees uniformly.
+- **The ledger is ignored via the untracked `.git/info/exclude`, not a tracked `.gitignore` line.**
+  `tick init` appends `/.tick` + `.tick.lock` to `<git-common-dir>/info/exclude`, which lives in the
+  git common dir and so covers **every worktree and every branch** uniformly — the same reach a tracked
+  entry had — while making **no commit** on any code branch and touching no working-tree file. It
+  matches both the real `.tick/` dir in the primary checkout and the `.tick` symlink in any other
+  worktree.
+  - **Why not the tracked `.gitignore` (changed from an earlier draft):** committing anything to the
+    host's code branch at `init` is a surprise the tool should not spring — especially since agents run
+    `tick init` inside repos they don't own. An early version committed the `/.tick` line (and, worse,
+    an opt-out-less AGENTS.md stanza) straight to `main`, and branches cut from that `main` inherited the
+    pollution. `info/exclude` gets the same per-repo, all-worktree/all-branch coverage with zero commits.
+  - **Migration:** repos initialized before this change still carry the committed `/.tick` line. On the
+    first run of tick ≥ 1.2 in such a repo, tick prints a one-time nudge to run **`tick migrate-ignore`**,
+    which moves the entries to `.git/info/exclude` and drops the `.gitignore` line in one commit (that
+    single commit is the *only* host-branch commit tick makes here, and it's on request).
 - **Additional worktrees:** `tick link` drops a gitignored `.tick` symlink → the primary's `.tick/`,
   for humans and `tick grep`. The tool itself never needs the symlink (it resolves the store from
   config).
@@ -142,7 +152,12 @@ mutations never push — see §4.)
 
 - A mutation is a commit to the **`tick` branch**, never the code branch — so the code branch's
   pre-push hook and CI never fire on it.
-- The **only** code-branch commit `tick` ever makes is the one-time `/.tick` `.gitignore` line at init.
+- **A plain `tick init` makes _zero_ code-branch commits** — the ledger is ignored via the untracked
+  `.git/info/exclude` (§3.3). The only code-branch commits tick ever makes are both **opt-in and
+  guarded**: the AGENTS.md stanza under `tick init --agents`, and the `.gitignore` cleanup under
+  `tick migrate-ignore`. Each is refused unless the primary worktree is on a branch with a clean tree
+  (`git status --porcelain` empty), overridable with `--force-host`, so tick never lands a commit on top
+  of unrelated in-flight work.
 - Per-write = an instant local commit (sub-second, offline). Backup push is **automatic but off the
   write path** — a detached best-effort `git push` fires after the commit, so the write returns
   instantly and never waits on (or fails because of) the network. `tick sync` remains for explicit
@@ -255,7 +270,8 @@ Timestamps come from an **injectable UTC clock** (see §9) so tests are determin
 
 | Command | Behavior |
 | --- | --- |
-| `tick init [--remote <name>] [--store <path>]` | Create the orphan `tick` branch + `.tick/` worktree, record `tick.worktree`/`tick.remote`/`tick.branch`, add the `/.tick` `.gitignore` line (one commit), create the `.tick` symlink, and (with confirmation) install the pre-push guard. Idempotent. |
+| `tick init [--remote <name>] [--store <path>] [--agents] [--install-guard] [--force-host]` | Create the orphan `tick` branch + `.tick/` worktree, record `tick.worktree`/`tick.remote`/`tick.branch`, and ignore `/.tick` + `.tick.lock` via `.git/info/exclude` (**no commit**). `--agents` also appends the tick stanza to `AGENTS.md` (one guarded docs commit); without it, tick prints a one-line recommendation when an `AGENTS.md` already exists. `--install-guard` installs the pre-push guard. `--force-host` overrides the clean-tree guard on host-repo commits. Idempotent. |
+| `tick migrate-ignore [--force-host]` | Move a pre-1.2 committed `/.tick` `.gitignore` line to `.git/info/exclude`, dropping it from the tracked file in one guarded commit. No-op if already migrated. |
 | `tick add "<title>" [--kind K] [--tag T]...` | Mint an id, write `<id>.md`, commit. **Prints the mark `~<id>`** to paste into code. |
 | `tick mark <id> <file:line>` | Inject the mark `~<id>` as a trailing comment at `file:line` (comment leader inferred from the extension, default `#`). Edits code only — no commit, no store lock; idempotent. |
 | `tick note <id> "<text>"` | Append a dated note, commit. |
@@ -279,7 +295,10 @@ Reads (`ls`, `show`, `grep`, `refs`, `orphans`) make **no** network calls.
 ## 8. Agent integration
 
 - **Reads are plain files.** Agents use their native Read/Grep — no MCP, no network (pressures 1 & 2).
-- **Target repos get an `AGENTS.md` / `CLAUDE.md` stanza**, roughly:
+- **Target repos can get an `AGENTS.md` / `CLAUDE.md` stanza — opt-in via `tick init --agents`.** It is
+  off by default (injecting tooling docs into a repo you may not own, and committing them, is a surprise);
+  when an `AGENTS.md` already exists but `--agents` was omitted, tick recommends it. The stanza is,
+  roughly:
   > This repo uses `tick` for task tracking. Before editing a file, `rg '~[2-7][a-z2-7]{3}\b' <file>` for
   > tick marks and read each referenced tick with `tick show <id>`. To search existing ticks, use
   > `tick grep <text>`. When your change resolves a tick, `tick off <id>` and delete the mark. To
@@ -339,8 +358,11 @@ zipapp is the primary artifact.
    open-ticks-without-mark) correctly.
 
 **Store / integration (temp git repo):**
-10. `init` creates the orphan `tick` branch + `.tick/` worktree, records config, adds the `/.tick`
-    `.gitignore` line in exactly one code-branch commit, is idempotent.
+10. `init` creates the orphan `tick` branch + `.tick/` worktree, records config, ignores `/.tick` +
+    `.tick.lock` via `.git/info/exclude` with **zero** code-branch commits, is idempotent. `--agents`
+    appends the AGENTS.md stanza in one guarded commit; the clean-tree guard refuses a host-repo commit
+    on a dirty/detached primary worktree unless `--force-host`. `migrate-ignore` moves a pre-1.2 tracked
+    `/.tick` line to `.git/info/exclude` in one guarded commit.
 11. `add` writes `<id>.md` and produces exactly one commit on `tick`; prints `~<id>`.
 12. `note` / `edit` / `off` each produce one commit and the expected file change.
 13. the flock critical section serializes two concurrent `add`s (no index corruption, both ticks land,
@@ -369,7 +391,8 @@ zipapp is the primary artifact.
 | Line-number rot in tick→code refs | The id is the durable anchor; tick files say "search the mark," never cite line numbers. |
 | Multi-machine drift | One-file-per-tick + `tick sync` (pull --rebase); conflicts are rare and per-file. |
 | `.tick/` descended into by non-gitignore-respecting tools (`find`, some linters) | Markdown-only content; gitignore-respecting tools skip it; same exposure as your existing `.claude/worktrees/`. |
-| Store not discoverable to a new clone | `git config tick.worktree` + the `AGENTS.md` stanza; `tick init` is idempotent and re-establishes the symlink. |
+| Store not discoverable to a new clone | `git config tick.worktree` + the optional `AGENTS.md` stanza (`--agents`); `tick init` is idempotent and re-establishes the symlink. |
+| `tick init` run inside a repo the user doesn't own (e.g. by an agent) polluting `main` | No code-branch commit by default — `.tick` is ignored via untracked `.git/info/exclude`; the AGENTS.md stanza is opt-in; every host-repo commit is refused on a dirty/detached primary worktree unless `--force-host`. |
 | `tick` branch noticed on the shared remote | Accepted (clutter-avoidance, not secrecy); it's a single ignorable branch. |
 | `git worktree --orphan` needs git ≥ 2.42 | Detect version; fall back to the manual orphan-branch dance on older git. |
 
@@ -400,9 +423,20 @@ zipapp is the primary artifact.
   swallowed, so the offline-first instant-write budget (§3.5) is preserved. Opt out via
   `TICK_NO_UPDATE_CHECK=1` or `--no-update-check`.
 - **Global, not per-branch** (forking the backlog rejected).
-- **Storage:** in-repo `.tick/` worktree on an orphan `tick` branch; ignored via one tracked
-  `/.tick` `.gitignore` line; config-based discovery. (Sibling and `~/.local/share` alternatives
-  rejected.)
+- **Storage:** in-repo `.tick/` worktree on an orphan `tick` branch; ignored via the untracked
+  `.git/info/exclude` (changed from a tracked `/.tick` `.gitignore` line — see below); config-based
+  discovery. (Sibling and `~/.local/share` alternatives rejected.)
+- **No host-branch commits by default; host mutations are opt-in and guarded** (added after v1.1.7,
+  prompted by a report from an agent that ran `tick init` inside a spec repo it didn't own). The original
+  `init` silently committed two things to the current branch: the `/.tick` `.gitignore` line and — worse
+  — a 24-line `AGENTS.md` stanza about tick, with no flag and no prompt. An agent then cut PR branches
+  from that polluted `main`. Three changes close this: **(1)** the ledger is ignored via the untracked
+  `.git/info/exclude` (§3.3), which has the same all-worktree/all-branch reach as the tracked line but
+  makes no commit; **(2)** the `AGENTS.md` stanza is **opt-in** (`--agents`) — when omitted but an
+  `AGENTS.md` exists, tick prints a recommendation rather than acting; **(3)** every remaining host-repo
+  commit (`--agents`, and `migrate-ignore`'s `.gitignore` cleanup) is refused unless the primary worktree
+  is on a branch with a clean `git status --porcelain`, overridable with `--force-host`. Repos initialized
+  under the old scheme are nudged once (first run of tick ≥ 1.2) to run `tick migrate-ignore`.
 - **Relocatable store** (resolves `5aqn`)**:** `tick.worktree` is stored *relative* to the repo root and resolved
   against `--git-common-dir`'s parent; git's linked-worktree pointer is self-healed with
   `git worktree repair` on resolve. A repo move/rename therefore needs no manual config reset or

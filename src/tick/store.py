@@ -19,10 +19,21 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from tick import __version__
 from tick import core
 
 BRANCH = "tick"
 LOCK_NAME = ".tick.lock"
+
+# The ledger worktree and its lock are ignored via the repo-local, UNTRACKED
+# `.git/info/exclude` (see `_ensure_code_exclude`) rather than a tracked `.gitignore`
+# line, so `tick init` makes no commit on the host's code branch.
+IGNORE_ENTRIES = ("/.tick", LOCK_NAME)
+
+# First tick release that ignores the ledger via `.git/info/exclude` instead of a
+# committed `.gitignore` line. On the first run of a tick at or past this version in
+# a repo still using the old mechanism, tick offers a one-time `migrate-ignore` nudge.
+MIGRATION_VERSION = "1.2.0"
 
 # How long a backlog may sit unpushed before it counts as a real failure rather
 # than a push still in flight. Auto-push is detached and a mutation returns in
@@ -139,7 +150,8 @@ def _commit(cwd, message) -> str:
     commit hooks never gate tick's bookkeeping: tick commits run in worktrees that
     share the repo's `.git/hooks`, so a husky/lint-staged `prettier --check`,
     `eslint`, `commitlint`, gitleaks scan, or pre-commit test suite would otherwise
-    reject tick's gitignore line, its AGENTS.md stanza, and every ledger commit.
+    reject tick's AGENTS.md stanza (`--agents`), a `migrate-ignore` `.gitignore`
+    edit, and every ledger commit.
     Same rationale as the pre-push guard that skips the code repo's test tax on
     tick-branch pushes (SPEC §3.5). `-s` keeps the DCO sign-off."""
     return git(["commit", "--no-verify", "-s", "-m", message], cwd)
@@ -306,7 +318,8 @@ def resolve(cwd=".") -> Store:
     )
 
 
-def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
+def init(cwd=".", store_path=None, remote=None, install_guard=False,
+         inject_agents=False, force_host=False) -> Store:
     code_root = git(["rev-parse", "--show-toplevel"], cwd, check=False)
     if not code_root:
         raise TickError("not inside a git repository")
@@ -319,8 +332,11 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
         _validate_remote(remote, cwd)  # reject URLs / unknown names up front, on fresh init and re-init alike
 
     if _config_get("tick.worktree", cwd):
-        _ensure_code_gitignore(primary_root)  # self-heal a half-ignored repo; no-op if already present
-        _ensure_agents_stanza(primary_root)   # self-heal a missing AGENTS.md stanza; no-op if present
+        _ensure_code_exclude(common)  # self-heal a half-ignored repo; no-op if already present
+        if inject_agents:
+            _ensure_agents_stanza(primary_root, force=force_host)  # self-heal a missing stanza; no-op if present
+        else:
+            _maybe_recommend_agents(primary_root)
         if remote:
             # Honor an explicit --remote on re-init: the original `tick init` may have
             # run before the remote existed (leaving tick.remote unset), and re-running
@@ -361,8 +377,11 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False) -> Store:
     if remote:
         _config_set("tick.remote", remote, cwd)
 
-    _ensure_code_gitignore(primary_root)
-    _ensure_agents_stanza(primary_root)
+    _ensure_code_exclude(common)
+    if inject_agents:
+        _ensure_agents_stanza(primary_root, force=force_host)
+    else:
+        _maybe_recommend_agents(primary_root)
 
     store = resolve(cwd)
     if install_guard:
@@ -407,45 +426,177 @@ def _remote_has_branch(remote, branch, cwd) -> bool:
     return bool(git(["ls-remote", "--heads", remote, branch], cwd, check=False).strip())
 
 
-def _ensure_code_gitignore(primary_root) -> bool:
-    """Add `/.tick` + lock to the primary worktree's tracked .gitignore (one commit).
+def _exclude_file(common: Path) -> Path:
+    return common / "info" / "exclude"
 
-    Always targets the primary worktree — the ledger physically lives at
-    `<primary_root>/.tick`, so that is the only checkout whose `.gitignore` needs
-    the entry. Writing it to whatever worktree `tick init` happened to run from
-    would put it on the wrong branch (and leave the primary branch staging `.tick`
-    as an embedded-repo gitlink)."""
-    gi = primary_root / ".gitignore"
-    lines = gi.read_text().splitlines() if gi.exists() else []
+
+def _ensure_code_exclude(common: Path) -> bool:
+    """Ignore the ledger worktree via the repo-local, UNTRACKED `.git/info/exclude`
+    instead of the tracked `.gitignore`.
+
+    This is what keeps `tick init` from making ANY commit on the host's code branch.
+    The custos incident showed the old tracked-`.gitignore` line (and, worse, an
+    AGENTS.md stanza) landing on someone else's `main` unbidden and then leaking into
+    PRs cut from it. `info/exclude` lives in the git *common* dir, so a single write
+    covers every worktree and every branch — the same reach the tracked entry had —
+    but it touches no history and no working tree, so there is nothing to commit and
+    nothing to pollute. Idempotent: only missing entries are appended."""
+    excl = _exclude_file(common)
+    excl.parent.mkdir(parents=True, exist_ok=True)
+    lines = excl.read_text().splitlines() if excl.exists() else []
     already = {ln.strip() for ln in lines}
-    if "/.tick" in already or ".tick" in already:
+    have_tick = "/.tick" in already or ".tick" in already
+    have_lock = LOCK_NAME in already
+    missing = []
+    if not have_tick:
+        missing.append("/.tick")
+    if not have_lock:
+        missing.append(LOCK_NAME)
+    if not missing:
         return False
-    with open(gi, "a") as f:
+    with open(excl, "a") as f:
         if lines and lines[-1].strip() != "":
             f.write("\n")
-        f.write("/.tick\n" + LOCK_NAME + "\n")
-    git(["add", ".gitignore"], primary_root)
-    _commit(primary_root, "chore: ignore tick ledger worktree (/.tick)")
+        for e in missing:
+            f.write(e + "\n")
     return True
 
 
-def _ensure_agents_stanza(primary_root) -> bool:
+def _assert_host_mutable(primary_root, force, action) -> None:
+    """Guard every host-repo *commit* behind a clean, on-a-branch check.
+
+    `tick init` used to commit to whatever branch happened to be checked out, no
+    questions asked — so a coding agent that ran it inside someone else's repo
+    silently landed tick's bookkeeping on `main`, on top of (and entangled with)
+    unrelated in-flight work, and branches cut from that `main` inherited the
+    pollution. This gate makes any host-branch commit conditional on the primary
+    worktree being on a branch (not detached) with `git status --porcelain` clean;
+    `force` (via `--force-host`) overrides it for callers who really mean to.
+
+    Writing `.git/info/exclude` is deliberately NOT gated: it makes no commit and
+    touches no tracked file, so it can never pollute history or entangle live work."""
+    if force:
+        return
+    head = git(["symbolic-ref", "--quiet", "HEAD"], primary_root, check=False)
+    if not head:
+        raise TickError(
+            f"refusing to {action}: the repo's primary worktree has a detached HEAD, "
+            f"not a branch. Check out a branch first, or pass --force-host to override."
+        )
+    dirty = git(["status", "--porcelain"], primary_root, check=False)
+    if dirty:
+        shown = "\n".join("    " + ln for ln in dirty.splitlines()[:10])
+        raise TickError(
+            f"refusing to {action}: the repo's primary worktree has uncommitted "
+            f"changes. tick won't commit onto an unclean branch — commit or stash "
+            f"first, or pass --force-host to override.\n  outstanding:\n{shown}"
+        )
+
+
+def _ensure_agents_stanza(primary_root, force=False) -> bool:
     """Append the tick stanza to the primary worktree's AGENTS.md (one commit).
 
     Teaches coding agents to drive the local ledger instead of an external tracker.
+    Opt-in only (`tick init --agents`): injecting tooling docs into a repo you may
+    not own — and committing them — is exactly the surprise the custos incident was.
     Idempotent: skipped if the stanza marker is already present, so a re-init never
-    duplicates it. Creates AGENTS.md when absent and preserves any existing content
-    (the stanza is appended). Targets the primary worktree for the same reason as
-    `_ensure_code_gitignore` — that's the checkout users actually read."""
+    duplicates it (and never touches the guarded path). Creates AGENTS.md when absent
+    and preserves any existing content (the stanza is appended). The commit goes
+    through `_assert_host_mutable`, so it refuses an unclean/detached primary worktree
+    unless `force`. Targets the primary worktree — that's the checkout users read."""
     agents = primary_root / "AGENTS.md"
     existing = agents.read_text() if agents.exists() else ""
     if STANZA_BEGIN in existing:
         return False
+    _assert_host_mutable(primary_root, force, "add the tick stanza to AGENTS.md")
     sep = "" if existing == "" or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
     agents.write_text(existing + sep + _TICK_STANZA)
     git(["add", "AGENTS.md"], primary_root)
     _commit(primary_root, "docs: add tick stanza to AGENTS.md")
     return True
+
+
+def _maybe_recommend_agents(primary_root) -> None:
+    """When the user didn't pass `--agents` but the repo already keeps an AGENTS.md,
+    nudge (on stderr) toward `tick init --agents`. A repo that already maintains an
+    AGENTS.md is exactly one where the stanza — which teaches coding agents to drive
+    the ledger instead of an external tracker — pays off. Silent when there is no
+    AGENTS.md or the stanza is already present."""
+    agents = primary_root / "AGENTS.md"
+    if not agents.exists() or STANZA_BEGIN in agents.read_text():
+        return
+    _warn(
+        "this repo has an AGENTS.md but tick left it untouched. Re-run "
+        "`tick init --agents` to add the stanza that teaches coding agents to drive "
+        "the ledger (it commits one docs change to the current branch)."
+    )
+
+
+def _old_gitignore_present(primary_root) -> bool:
+    """True if this repo still ignores the ledger the pre-1.2 way — a `/.tick` (or
+    bare `.tick`) line committed into the tracked `.gitignore` by an old `tick init`."""
+    gi = primary_root / ".gitignore"
+    if not gi.exists():
+        return False
+    entries = {ln.strip() for ln in gi.read_text().splitlines()}
+    return "/.tick" in entries or ".tick" in entries
+
+
+def migrate_ignore(cwd=".", force_host=False) -> bool:
+    """Move the ledger ignore from the tracked `.gitignore` (pre-1.2) to the untracked
+    `.git/info/exclude`, dropping the committed `/.tick`/`.tick`/lock lines so the host
+    branch stops carrying tick bookkeeping. Returns True if it changed anything (False
+    when there was nothing to migrate). The `.gitignore` edit is a host-repo commit, so
+    it goes through the clean-tree guard — override with `force_host`."""
+    common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
+    primary_root = _primary_root(common)
+    _ensure_code_exclude(common)  # put the new mechanism in place first (no commit)
+    if not _old_gitignore_present(primary_root):
+        _config_set("tick.ignoreMigrationNotified", __version__, cwd)  # nothing to nag about
+        return False
+    _assert_host_mutable(primary_root, force_host, "remove the /.tick line from .gitignore")
+    gi = primary_root / ".gitignore"
+    kept = [ln for ln in gi.read_text().splitlines()
+            if ln.strip() not in ("/.tick", ".tick", LOCK_NAME)]
+    gi.write_text("".join(ln + "\n" for ln in kept) if kept else "")
+    git(["add", ".gitignore"], primary_root)
+    _commit(primary_root, "chore: move tick ledger ignore to .git/info/exclude")
+    _config_set("tick.ignoreMigrationNotified", __version__, cwd)
+    return True
+
+
+def _version_tuple(v):
+    parts = []
+    for p in v.split("+")[0].split("-")[0].split("."):
+        num = "".join(ch for ch in p if ch.isdigit())
+        parts.append(int(num) if num else 0)
+    return tuple(parts)
+
+
+def maybe_notify_ignore_migration(cwd=".") -> None:
+    """One-time nudge, on the first run of a tick >= MIGRATION_VERSION in a repo still
+    ignoring the ledger the pre-1.2 way, toward `tick migrate-ignore`. Best-effort and
+    silent unless there's something to say; records a marker so it never nags twice."""
+    try:
+        if _version_tuple(__version__) < _version_tuple(MIGRATION_VERSION):
+            return
+        if not _config_get("tick.worktree", cwd):
+            return  # not initialized in this repo
+        if _config_get("tick.ignoreMigrationNotified", cwd):
+            return  # already offered once
+        common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
+        primary_root = _primary_root(common)
+        if not _old_gitignore_present(primary_root):
+            return
+        _config_set("tick.ignoreMigrationNotified", __version__, cwd)
+        _warn(
+            "this repo ignores the tick ledger via a committed `.gitignore` line (the "
+            "pre-1.2 mechanism). tick now uses the untracked `.git/info/exclude`, so it "
+            "makes no commit on your code branch. Run `tick migrate-ignore` to switch "
+            "over (removes the /.tick line from .gitignore in one commit)."
+        )
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------- locking

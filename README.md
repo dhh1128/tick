@@ -48,7 +48,8 @@ nudge, at most once a day, when a newer version exists — silence it with
 
 ```sh
 cd your-repo
-tick init                         # creates the orphan `tick` branch + .tick/ worktree
+tick init                         # orphan `tick` branch + .tick/ worktree; no commit on your branch
+#                                 # add --agents to also drop the tick stanza into AGENTS.md (opt-in)
 tick add "Speed up the lexer" --kind debt --tag parser
 #  -> ~4mz3  Speed up the lexer
 #     paste the mark  ~4mz3  wherever this work lives in the code
@@ -98,7 +99,8 @@ mark (`tick show <id>`).
 
 | Command | What it does |
 | --- | --- |
-| `tick init` | Set up the ledger (orphan branch, `.tick/` worktree, config, gitignore). |
+| `tick init [--agents] [--install-guard] [--force-host]` | Set up the ledger (orphan branch, `.tick/` worktree, config); ignores `.tick` via `.git/info/exclude` with **no commit on your branch**. `--agents` also adds the tick stanza to `AGENTS.md` (a guarded docs commit; opt-in). |
+| `tick migrate-ignore` | Move a pre-1.2 committed `/.tick` `.gitignore` line to `.git/info/exclude`. |
 | `tick add "<title>" [--kind todo\|debt\|idea] [--tag T]…` | Add a tick; prints the mark. |
 | `tick mark <id> <file:line>` | Inject the mark as a trailing comment at `file:line` (no commit). |
 | `tick note <id> "<text>"` | Append a dated note. |
@@ -118,7 +120,8 @@ mark (`tick show <id>`).
 
 The ledger is an **orphan branch `tick`** (one Markdown file per tick, `<id>.md`),
 checked out once as a persistent worktree at `<repo-root>/.tick/` and ignored on
-the code branches via a single `/.tick` line in `.gitignore`. The multiple
+every branch via a `/.tick` entry in the repo-local, untracked
+`.git/info/exclude` — so `tick init` makes **no commit** on your code branch. The multiple
 worktrees of a repo share one object store, so a tick added in one worktree is
 instantly visible in the others; an exclusive `flock` makes concurrent writes
 safe. Each mutation also fires a **best-effort background push** of the `tick`
@@ -139,14 +142,17 @@ set (auto-push is a silent no-op there — the hint tells you to configure it).
 ## Agents
 
 Reads are plain files, so an AI agent uses its native read/grep — no MCP, no
-network. Install the Claude skill and add the stanza so agents use the ledger:
+network. Install the Claude skill so agents use the ledger:
 
 ```sh
 mkdir -p ~/.claude/skills/tick && cp skill/SKILL.md ~/.claude/skills/tick/
 ```
 
-Paste [`docs/agents-stanza.md`](docs/agents-stanza.md) into a target repo's
-`AGENTS.md` / `CLAUDE.md`.
+To teach agents about the ledger in a specific repo, add the stanza to its
+`AGENTS.md` / `CLAUDE.md`. This is **opt-in**: run `tick init --agents` (it
+appends the stanza and commits that one docs change on your current branch), or
+paste [`docs/agents-stanza.md`](docs/agents-stanza.md) in by hand. A plain
+`tick init` never touches `AGENTS.md`.
 
 ## Development
 
