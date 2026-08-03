@@ -33,7 +33,7 @@ IGNORE_ENTRIES = ("/.tick", LOCK_NAME)
 # First tick release that ignores the ledger via `.git/info/exclude` instead of a
 # committed `.gitignore` line. On the first run of a tick at or past this version in
 # a repo still using the old mechanism, tick offers a one-time `migrate-ignore` nudge.
-MIGRATION_VERSION = "1.2.0"
+MIGRATION_VERSION = "1.2.1"
 
 # How long a backlog may sit unpushed before it counts as a real failure rather
 # than a push still in flight. Auto-push is detached and a mutation returns in
