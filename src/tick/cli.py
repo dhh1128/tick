@@ -26,7 +26,15 @@ def cmd_init(args) -> int:
     print(f"tick initialized")
     print(f"  store:  {st.worktree}")
     print(f"  branch: {st.branch}")
-    print(f"  remote: {st.remote or '(none — attach later with `git config tick.remote <remote-name>`, or re-run `tick init --remote <remote-name>`)'}")
+    if st.remote:
+        print(f"  remote: {st.remote} (the ledger is pushed there after each mutation)")
+    else:
+        # The one notice a detached ledger earns, at the only moment it is news.
+        # Backup is opt-in, so silence here would leave the user believing a ledger
+        # was backed up when nothing had ever left the machine.
+        print(f"  remote: none — this ledger is DETACHED: it lives only in this clone,")
+        print(f"          and nothing is pushed anywhere. Connect it whenever you like:")
+        print(f"            tick init --remote origin")
     print(f"  autopush: {'on' if st.autopush else 'off'} (background backup after each mutation)")
     print(f"  ignore: .tick ignored via .git/info/exclude (no commit on your branch)")
     if args.agents:
@@ -110,9 +118,14 @@ def _backup_hint(status) -> str | None:
         return None
     plural = "" if status.count == 1 else "s"
     if status.state == "unconfigured":
+        # Undecided, not detached: this ledger pre-dates the `none` sentinel, so
+        # nobody has said whether it should be backed up. Name both exits — one of
+        # them silences this permanently, which is the difference between a hint and
+        # a nag.
         return (
             "note: this ledger has no backup remote — it exists only on this machine.\n"
-            "  attach one:  git config tick.remote origin"
+            "  back it up:      git config tick.remote origin\n"
+            "  or keep it here: git config tick.remote none   (local by design, silences this)"
         )
     if status.state == "never":
         return (
@@ -249,8 +262,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("init", help="set up the tick ledger in this repo")
     sp.add_argument(
         "--remote", metavar="NAME",
-        help="git remote NAME (e.g. origin) — not a URL — to push the tick branch to "
-             "(default: auto-detect, prefers origin)",
+        help="git remote NAME (e.g. origin) — not a URL — to push the tick branch to. "
+             "Backup is opt-in: without this the ledger stays in this clone and is "
+             "never pushed. `--remote none` says that explicitly (and skips the "
+             "remote probe); re-run with a name later to attach one.",
     )
     sp.add_argument("--store", help="store path (default: <repo-root>/.tick)")
     sp.add_argument("--install-guard", action="store_true", help="install the pre-push guard")

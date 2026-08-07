@@ -122,26 +122,44 @@ stable primary clone.
 
 ### 3.4 Backup / multi-machine (push target)
 
-The `tick` branch is pushed to the **same remote as the code** (decision: simplest, zero extra setup),
-appearing as an ignorable branch named `tick`. `tick init` records `tick.remote` (default the existing
-`origin`) and `tick.branch` (`tick`). Backup is **automatic**: after each mutation tick fires a
-best-effort background `git push` of the ledger branch (`tick.autopush`, default on — set off with
-`git config tick.autopush false`). It never blocks or fails the write; offline/rejected pushes just defer
-to the next mutation. `tick sync` is the explicit full reconcile — `git pull --rebase` then
-`git push <remote> tick` — used to **pull** another machine's changes and to flush any deferred backlog.
+**Backup is opt-in; a fresh ledger is detached.** `tick init` records `tick.branch` (`tick`) and
+`tick.remote` — but with no `--remote`, the value it records is the sentinel **`none`**, meaning *local
+by design*: this ledger lives in this clone and is never pushed. Pushing a private working ledger to a
+shared remote is not a decision to make on the user's behalf from the mere existence of an `origin`, and
+recording the sentinel (rather than leaving the key unset) is what lets the backup gauge stay silent
+about it forever. The one notice a detached ledger earns is a line in `tick init`'s own output, naming
+the command that attaches a remote later. `--remote none` states the default explicitly and skips
+init's only network call.
+
+**Opting in.** `tick init --remote <name>` pushes the `tick` branch to the **same remote as the code**
+(decision: simplest, zero extra setup), appearing as an ignorable branch named `tick`. Re-running
+`tick init --remote <name>` attaches a remote to an existing ledger, and `--remote none` detaches one.
+Once attached, backup is **automatic**: after each mutation tick fires a best-effort background
+`git push` of the ledger branch (`tick.autopush`, default on — set off with `git config tick.autopush
+false`). It never blocks or fails the write; offline/rejected pushes just defer to the next mutation.
+`tick sync` is the explicit full reconcile — `git pull --rebase` then `git push <remote> tick` — used to
+**pull** another machine's changes and to flush any deferred backlog; on a detached ledger it refuses,
+naming the state and the way out.
+
+**The one exception to opt-in: adoption.** If the repo's remote already publishes a `tick` branch, a
+bare `tick init` attaches that remote without being asked. The ledger is *already* shared, so a detached
+orphan beside it would strand this clone's ticks on unrelated history and collide the first time anyone
+pushed (§3.4's adopt path predates opt-in and is unchanged).
 
 **Backup hint on `tick ls`.** The backlog gauge is network-free (it diffs `HEAD` against
 `refs/remotes/<remote>/<branch>`), so it can see *that* commits aren't backed up but never *why*. It
 therefore reports observations and never diagnoses a cause. States: `ok`; `pending` (a backlog younger
-than a 30s grace window — auto-push is detached and a mutation returns in ~0.1s while its push takes
+than a 30s grace window — auto-push is fire-and-forget and a mutation returns in ~0.1s while its push takes
 seconds, so the tracking ref legitimately lags every write; silent); `stale` (a backlog past the window,
 reported with a count and the age of its **oldest** commit — anchoring on the oldest keeps a fresh
 mutation from resetting the clock and muting a real day-old backlog); `never` (a configured remote that
 has never received the ledger — counts the whole branch, since zero backup is the loudest case, not the
-quietest); `unconfigured` (the repo has remotes but `tick.remote` is unset, so every auto-push has been a
-silent no-op — the one state `tick sync` can't fix, so the hint names the `git config` instead);
-`local-only` (no remotes at all — nothing to say). The hint keys off whether the ledger holds ticks at
-all, not off what the current listing rendered, so a filter that hides everything can't silence it.
+quietest); `unconfigured` (the repo has remotes but `tick.remote` is **unset** — a ledger created before
+the sentinel existed, so nobody ever decided; every auto-push has been a silent no-op, and since
+`tick sync` can't fix it the hint names both `git config` exits: attach a remote, or declare the ledger
+local); `local-only` (nowhere to push *by design* — `tick.remote` is `none`, or the repo has no remotes
+at all — nothing to say). The hint keys off whether the ledger holds ticks at all, not off what the
+current listing rendered, so a filter that hides everything can't silence it.
 
 To keep `sync` from paying the code repo's test tax, `tick init` (with confirmation) installs a guard at
 the **top of the repo's `pre-push` hook**: *if every ref being pushed is `refs/heads/tick`, `exit 0`.*
@@ -159,7 +177,7 @@ mutations never push — see §4.)
   (`git status --porcelain` empty), overridable with `--force-host`, so tick never lands a commit on top
   of unrelated in-flight work.
 - Per-write = an instant local commit (sub-second, offline). Backup push is **automatic but off the
-  write path** — a detached best-effort `git push` fires after the commit, so the write returns
+  write path** — a fire-and-forget best-effort `git push` fires after the commit, so the write returns
   instantly and never waits on (or fails because of) the network. `tick sync` remains for explicit
   pull+flush. Both are made fast by the §3.4 pre-push guard.
 
@@ -270,7 +288,7 @@ Timestamps come from an **injectable UTC clock** (see §9) so tests are determin
 
 | Command | Behavior |
 | --- | --- |
-| `tick init [--remote <name>] [--store <path>] [--agents] [--install-guard] [--force-host]` | Create the orphan `tick` branch + `.tick/` worktree, record `tick.worktree`/`tick.remote`/`tick.branch`, and ignore `/.tick` + `.tick.lock` via `.git/info/exclude` (**no commit**). `--agents` also appends the tick stanza to `AGENTS.md` (one guarded docs commit); without it, tick prints a one-line recommendation when an `AGENTS.md` already exists. `--install-guard` installs the pre-push guard. `--force-host` overrides the clean-tree guard on host-repo commits. Idempotent. |
+| `tick init [--remote <name>] [--store <path>] [--agents] [--install-guard] [--force-host]` | Create the orphan `tick` branch + `.tick/` worktree, record `tick.worktree`/`tick.remote`/`tick.branch`, and ignore `/.tick` + `.tick.lock` via `.git/info/exclude` (**no commit**). Without `--remote` the ledger is **detached** (`tick.remote` = `none`, never pushed) and init says so; `--remote <name>` opts into backup, `--remote none` states the default explicitly. Re-running with either switches an existing ledger between the two. `--agents` also appends the tick stanza to `AGENTS.md` (one guarded docs commit); without it, tick prints a one-line recommendation when an `AGENTS.md` already exists. `--install-guard` installs the pre-push guard. `--force-host` overrides the clean-tree guard on host-repo commits. Idempotent. |
 | `tick migrate-ignore [--force-host]` | Move a pre-1.2 committed `/.tick` `.gitignore` line to `.git/info/exclude`, dropping it from the tracked file in one guarded commit. No-op if already migrated. |
 | `tick add "<title>" [--kind K] [--tag T]...` | Mint an id, write `<id>.md`, commit. **Prints the mark `~<id>`** to paste into code. |
 | `tick mark <id> <file:line>` | Inject the mark `~<id>` as a trailing comment at `file:line` (comment leader inferred from the extension, default `#`). Edits code only — no commit, no store lock; idempotent. |
@@ -450,12 +468,25 @@ zipapp is the primary artifact.
   loud, non-silent error pointing at the reflog. Same most-local-first philosophy as init's adopt path;
   the present-directory hot path stays a single `exists()` check plus the existing moved-repo link repair.
 - **Push target:** same remote as the code, branch `tick` (ignorable); not a separate private remote.
-- **Automatic backup (`6pyc`):** mutations fire a best-effort, detached background `git push` of the
+- **Backup is opt-in, and a detached ledger can say so (added in 1.3.0).** `tick init` no longer
+  auto-detects `origin`; without `--remote` it records the sentinel `tick.remote = none` and prints one
+  notice saying the ledger is detached and how to connect it. Two reasons. First, defaulting to a push
+  decides on the user's behalf that a private working ledger belongs on a shared remote, inferred from
+  nothing but the existence of an `origin`. Second, before the sentinel there was no way to *express*
+  "local by design": a repo with a remote and no `tick.remote` warned on every `tick ls`, forever, with
+  no opt-out — the state a deliberately-local ledger and a misconfigured one shared. Recording the
+  decision in the same key (rather than adding a `tick.backup` knob) keeps one place to look for where a
+  ledger goes and makes a remote-plus-contradictory-policy configuration unrepresentable. Adoption is
+  the deliberate exception: a bare `tick init` still attaches the remote when that remote already
+  publishes a `tick` branch, since the ledger is already shared and a detached orphan beside it would
+  collide. An **unset** `tick.remote` now means only "a pre-1.3.0 ledger, undecided", and keeps warning
+  — with both exits named.
+- **Automatic backup (`6pyc`):** mutations fire a best-effort, fire-and-forget background `git push` of the
   ledger branch (`tick.autopush`, default on), so backup needs no manual `tick sync`. Kept off the write
   path to preserve the instant/offline write; `sync` stays as the explicit pull+flush.
 - **The backup hint reports, it does not diagnose.** The gauge is network-free, so "not on the remote"
   is all it can observe; the original wording ("auto-push offline? — run `tick sync` when back online")
-  asserted a cause it had never tested. Because the push is detached and outlives the CLI, the *normal*
+  asserted a cause it had never tested. Because the push outlives the CLI, the *normal*
   post-mutation state is a lagging tracking ref — so a bare nonzero count fires on a perfectly online
   machine, and agents relayed the invented diagnosis to the user as fact. Fixed with a grace window
   (`pending` vs `stale`) anchored on the oldest unpushed commit, plus explicit `never` / `unconfigured`

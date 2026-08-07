@@ -99,7 +99,7 @@ mark (`tick show <id>`).
 
 | Command | What it does |
 | --- | --- |
-| `tick init [--agents] [--install-guard] [--force-host]` | Set up the ledger (orphan branch, `.tick/` worktree, config); ignores `.tick` via `.git/info/exclude` with **no commit on your branch**. `--agents` also adds the tick stanza to `AGENTS.md` (a guarded docs commit; opt-in). |
+| `tick init [--remote NAME] [--agents] [--install-guard] [--force-host]` | Set up the ledger (orphan branch, `.tick/` worktree, config); ignores `.tick` via `.git/info/exclude` with **no commit on your branch**. Without `--remote` the ledger is **detached** — local to this clone, never pushed. `--agents` also adds the tick stanza to `AGENTS.md` (a guarded docs commit; opt-in). |
 | `tick migrate-ignore` | Move a pre-1.2 committed `/.tick` `.gitignore` line to `.git/info/exclude`. |
 | `tick add "<title>" [--kind todo\|debt\|idea] [--tag T]…` | Add a tick; prints the mark. |
 | `tick mark <id> <file:line>` | Inject the mark as a trailing comment at `file:line` (no commit). |
@@ -124,20 +124,40 @@ every branch via a `/.tick` entry in the repo-local, untracked
 `.git/info/exclude` — so `tick init` makes **no commit** on your code branch. The multiple
 worktrees of a repo share one object store, so a tick added in one worktree is
 instantly visible in the others; an exclusive `flock` makes concurrent writes
-safe. Each mutation also fires a **best-effort background push** of the `tick`
-branch to the same remote as the code (an ignorable branch), so the ledger backs
-itself up with no manual step — offline just defers to the next mutation or
-`tick sync`. Turn it off with `git config tick.autopush false`. `tick sync` is
-the explicit pull-and-flush (e.g. to pull another machine's changes). See
-[`SPEC.md`](SPEC.md) §3–4.
+safe. See [`SPEC.md`](SPEC.md) §3–4.
 
-Because that push is detached, it is still running when the command returns, so
-`tick ls` stays quiet about a backlog younger than 30 seconds — that's a push in
-flight, not a failure. Past the window it says how many commits are unbacked, to
-which remote, and how old the oldest is; it never guesses *why*, since the check
-never touches the network. Two states get their own message: a ledger that has
-**never** reached its remote, and one whose repo has remotes but no `tick.remote`
-set (auto-push is a silent no-op there — the hint tells you to configure it).
+## Backup is opt-in
+
+A fresh ledger is **detached**: it lives in this clone and is never pushed
+anywhere. `tick init` says so once, and nothing nags about it afterwards — a
+private working ledger doesn't belong on a shared remote just because the repo
+has an `origin`.
+
+```sh
+tick init                      # detached (records tick.remote = none)
+tick init --remote origin      # opt in: push the ledger to origin
+tick init --remote none        # opt back out, at any time
+```
+
+Once a remote is attached, each mutation fires a **best-effort background push**
+of the `tick` branch to it (an ignorable branch alongside your code), so the
+ledger backs itself up with no manual step — offline just defers to the next
+mutation or `tick sync`. Turn the automatic part off with `git config
+tick.autopush false`. `tick sync` is the explicit pull-and-flush (e.g. to pull
+another machine's changes); on a detached ledger it declines and tells you how to
+attach a remote. The one case where `tick init` attaches a remote without being
+asked is when that remote already publishes a `tick` branch — a colleague's
+ledger, which this clone joins rather than forking.
+
+Because that push is fire-and-forget, it is still running when the command
+returns, so `tick ls` stays quiet about a backlog younger than 30 seconds —
+that's a push in flight, not a failure. Past the window it says how many commits
+are unbacked, to which remote, and how old the oldest is; it never guesses *why*,
+since the check never touches the network. A ledger that has **never** reached
+its remote gets its own message. So does one from before 1.3.0 whose
+`tick.remote` was never set: nobody decided there, so the hint names both exits —
+attach a remote, or `git config tick.remote none` to declare it local and silence
+the hint for good.
 
 ## Agents
 

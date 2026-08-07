@@ -168,11 +168,15 @@ def _bare_remote(repo, tmp_path):
     return bare
 
 
-def _seed(repo, capsys, title="something to lose"):
+def _seed(repo, capsys, title="something to lose", remote="origin"):
     """Init, then pin auto-push off so these tests drive every push explicitly.
     The order matters: `tick init` sets tick.autopush true, so disabling it first
-    would be silently undone and leave a background push racing the assertions."""
-    cli.main(["init"])
+    would be silently undone and leave a background push racing the assertions.
+
+    `remote` is passed explicitly because backup is opt-in — a bare `tick init`
+    leaves the ledger detached, which is the *absence* of the backup states these
+    tests exercise. Pass remote=None for the detached cases."""
+    cli.main(["init", *(["--remote", remote] if remote else [])])
     _git(["config", "tick.autopush", "false"], repo)
     cli.main(["add", title])
     capsys.readouterr()
@@ -224,23 +228,59 @@ def test_cli_ls_reports_a_ledger_that_has_never_been_backed_up(repo, tmp_path, m
 
 
 def test_cli_ls_reports_a_ledger_with_no_backup_remote_configured(repo, tmp_path, monkeypatch, capsys):
-    """The silent case: repo has an `origin`, but `tick.remote` was never set, so
-    autopush is a no-op. Name the fix, since `tick sync` alone can't help here."""
+    """The undecided case: repo has an `origin`, `tick.remote` unset (a ledger from
+    before the sentinel), so autopush is a no-op. Name both exits — attaching a
+    remote and declaring the ledger local — since `tick sync` can't help either way."""
     monkeypatch.chdir(repo)
-    _seed(repo, capsys)                                # inited with no remote
+    _seed(repo, capsys, remote=None)                   # inited with no remote
+    _git(["config", "--unset", "tick.remote"], repo)   # the pre-sentinel state
     _bare_remote(repo, tmp_path)                       # remote added afterwards
 
     assert cli.main(["ls"]) == 0
     err = capsys.readouterr().err
     assert "no backup remote" in err
-    assert "tick.remote" in err
+    assert "tick.remote origin" in err                 # attach it...
+    assert "tick.remote none" in err                   # ...or say it's local on purpose
 
 
 def test_cli_ls_says_nothing_in_a_repo_with_no_remotes(repo, monkeypatch, capsys):
     monkeypatch.chdir(repo)
-    _seed(repo, capsys)
+    _seed(repo, capsys, remote=None)
     assert cli.main(["ls"]) == 0
     assert capsys.readouterr().err == ""
+
+
+def test_cli_ls_says_nothing_for_a_detached_ledger(repo, tmp_path, monkeypatch, capsys):
+    """R-7K4M end to end: a repo WITH a remote, whose ledger is local by design.
+    Silence is the whole point — this used to warn on every `tick ls`, forever."""
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys, remote=None)                   # the new default: detached
+    monkeypatch.setattr(store, "GRACE_SECONDS", 0)     # no grace period to hide behind
+
+    assert cli.main(["ls"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_init_reports_a_detached_ledger_and_how_to_connect_it(repo, tmp_path, monkeypatch, capsys):
+    """The one warning the detached default earns: `tick init` says the ledger is
+    local to this clone and names the command that connects it later."""
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+
+    assert cli.main(["init"]) == 0
+    out = capsys.readouterr().out
+    assert "detached" in out.lower()
+    assert "tick init --remote origin" in out
+
+
+def test_cli_sync_refuses_a_detached_ledger(repo, tmp_path, monkeypatch, capsys):
+    _bare_remote(repo, tmp_path)
+    monkeypatch.chdir(repo)
+    _seed(repo, capsys, remote=None)
+
+    assert cli.main(["sync"]) == 1
+    assert "local by design" in capsys.readouterr().err
 
 
 def test_cli_ls_hint_survives_a_filter_that_hides_every_tick(repo, tmp_path, monkeypatch, capsys):
@@ -249,7 +289,7 @@ def test_cli_ls_hint_survives_a_filter_that_hides_every_tick(repo, tmp_path, mon
     a real backup warning."""
     _bare_remote(repo, tmp_path)
     monkeypatch.chdir(repo)
-    cli.main(["init"])
+    cli.main(["init", "--remote", "origin"])
     _git(["config", "tick.autopush", "false"], repo)
     cli.main(["add", "will be closed"])
     tid = re.search(r"~([2-7][a-z2-7]{3})", capsys.readouterr().out).group(1)

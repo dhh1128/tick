@@ -25,6 +25,15 @@ from tick import core
 BRANCH = "tick"
 LOCK_NAME = ".tick.lock"
 
+# The `tick.remote` value that declares a ledger local *by design*: no push target,
+# and — unlike an unset value — no warning about the missing backup. Backup is
+# opt-in (`tick init --remote <name>`), so a fresh init writes this; an unset value
+# can then only come from a ledger created before the sentinel existed, which is
+# genuinely undecided and still worth a hint. Deliberately a value of the same key
+# rather than a second one: there is one place to look for "where does this ledger
+# go", and no way to configure a remote and a contradictory backup policy at once.
+LOCAL_ONLY = "none"
+
 # The ledger worktree and its lock are ignored via the repo-local, UNTRACKED
 # `.git/info/exclude` (see `_ensure_code_exclude`) rather than a tracked `.gitignore`
 # line, so `tick init` makes no commit on the host's code branch.
@@ -123,6 +132,10 @@ class Store:
     remote: str | None
     branch: str = BRANCH
     autopush: bool = True
+    # True when `tick.remote` is the LOCAL_ONLY sentinel. `remote` is None either
+    # way, so every push path already no-ops; this is what separates "local on
+    # purpose" (silent) from "nobody has decided yet" (worth a hint).
+    local_only: bool = False
 
 
 # ------------------------------------------------------------------- git helpers
@@ -305,7 +318,9 @@ def resolve(cwd=".") -> Store:
     worktree, migrate = _resolve_store_path(raw, primary_root)
     if migrate:
         _config_set("tick.worktree", _rel_or_abs(worktree, primary_root), cwd)
-    remote = _config_get("tick.remote", cwd)
+    configured = _config_get("tick.remote", cwd)
+    local_only = _is_local_only(configured)
+    remote = None if local_only else configured
     branch = _config_get("tick.branch", cwd, BRANCH)
     _heal_worktree(primary_root, worktree, branch, remote)
     return Store(
@@ -315,6 +330,7 @@ def resolve(cwd=".") -> Store:
         remote=remote,
         branch=branch,
         autopush=_config_bool("tick.autopush", cwd, True),
+        local_only=local_only,
     )
 
 
@@ -328,7 +344,8 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False,
     common = Path(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd))
     primary_root = _primary_root(common)
 
-    if remote:
+    detach = _is_local_only(remote)
+    if remote and not detach:
         _validate_remote(remote, cwd)  # reject URLs / unknown names up front, on fresh init and re-init alike
 
     if _config_get("tick.worktree", cwd):
@@ -339,25 +356,41 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False,
             _maybe_recommend_agents(primary_root)
         if remote:
             # Honor an explicit --remote on re-init: the original `tick init` may have
-            # run before the remote existed (leaving tick.remote unset), and re-running
+            # run before the remote existed (leaving the ledger detached), and re-running
             # with --remote is the natural way to attach/update it. Without this the
-            # argument was silently dropped.
-            _config_set("tick.remote", remote, cwd)
+            # argument was silently dropped. `--remote none` runs the same path in
+            # reverse, detaching a ledger that had been pushing.
+            _config_set("tick.remote", LOCAL_ONLY if detach else remote, cwd)
         store = resolve(cwd)  # idempotent
         if install_guard:
             install_pre_push_guard(store)  # reachable on re-init too (e.g. flag forgotten first time); idempotent
         return store
 
     store_path = Path(store_path).resolve() if store_path else (primary_root / ".tick")
-    remote = remote or _detect_remote(cwd)
 
-    if remote and _remote_has_branch(remote, BRANCH, cwd):
-        # A contributor already initialized this repo and pushed the ledger. Adopt
-        # that branch instead of minting a fresh (divergent, unrelated-history)
-        # orphan root that would later collide on push. Fetch just the tick branch
-        # into its tracking ref, then check it out as a worktree tracking it.
-        git(["fetch", remote, f"+refs/heads/{BRANCH}:refs/remotes/{remote}/{BRANCH}"], cwd)
-        git(["worktree", "add", "--track", "-b", BRANCH, str(store_path), f"{remote}/{BRANCH}"], cwd)
+    # Backup is OPT-IN: a fresh ledger stays in this clone unless the caller names a
+    # remote. Pushing a private working ledger to a shared remote is not something to
+    # decide on someone's behalf from the mere existence of an `origin`.
+    #
+    # The single exception is adoption. If the repo's remote already publishes a
+    # ledger, a colleague opted in for this repo already; minting a detached orphan
+    # beside it would strand this clone's ticks on unrelated history and collide the
+    # first time anyone pushed. So probe for that case unless the caller said `none`
+    # — which is also the fast path, since the probe is this command's only network
+    # call.
+    adopted = None
+    if not detach:
+        candidate = remote or _detect_remote(cwd)
+        if candidate and _remote_has_branch(candidate, BRANCH, cwd):
+            adopted = candidate
+    remote = None if detach else (remote or adopted)
+
+    if adopted:
+        # Adopt the published branch rather than minting a fresh (divergent,
+        # unrelated-history) orphan root. Fetch just the tick branch into its
+        # tracking ref, then check it out as a worktree tracking it.
+        git(["fetch", adopted, f"+refs/heads/{BRANCH}:refs/remotes/{adopted}/{BRANCH}"], cwd)
+        git(["worktree", "add", "--track", "-b", BRANCH, str(store_path), f"{adopted}/{BRANCH}"], cwd)
     else:
         # Create an orphan branch from an empty root commit (no --orphan needed; robust
         # across git versions), then check it out as a worktree.
@@ -374,8 +407,11 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False,
     _config_set("tick.worktree", _rel_or_abs(store_path, primary_root), cwd)
     _config_set("tick.branch", BRANCH, cwd)
     _config_set("tick.autopush", "true", cwd)  # back up the ledger after each mutation; off via `git config tick.autopush false`
-    if remote:
-        _config_set("tick.remote", remote, cwd)
+    # Always record the decision, including "no remote" — recording it as the
+    # LOCAL_ONLY sentinel is what lets the backup gauge stay quiet for a ledger that
+    # is local on purpose, instead of nagging a state it cannot distinguish from
+    # a misconfiguration.
+    _config_set("tick.remote", remote or LOCAL_ONLY, cwd)
 
     _ensure_code_exclude(common)
     if inject_agents:
@@ -387,6 +423,12 @@ def init(cwd=".", store_path=None, remote=None, install_guard=False,
     if install_guard:
         install_pre_push_guard(store)
     return store
+
+
+def _is_local_only(value) -> bool:
+    """True for the `tick.remote` sentinel that declares a ledger local by design.
+    Case-insensitive so a hand-edited `NONE` in git config still reads as intended."""
+    return value is not None and value.strip().lower() == LOCAL_ONLY
 
 
 def _remote_names(cwd):
@@ -652,7 +694,9 @@ class BackupStatus:
       never         a configured remote that has never received this ledger
       unconfigured  the repo has remotes but `tick.remote` is unset, so auto-push
                     is a silent no-op and nothing is backed up anywhere
-      local-only    the repo has no remotes at all — nowhere to push, by design
+      local-only    nowhere to push, by design — either `tick.remote` is the
+                    LOCAL_ONLY sentinel (the default since backup went opt-in) or
+                    the repo has no remotes at all
     """
 
     state: str
@@ -718,10 +762,12 @@ def backup_status(store: Store, clock=time.time, grace: int | None = None) -> Ba
     """Classify the ledger's backup state without touching the network (SPEC §4)."""
     grace = GRACE_SECONDS if grace is None else grace
     if not store.remote:
-        # No push target. Distinguish "this repo is local by design" (nothing to
-        # say) from "there IS a remote, tick just isn't wired to it" — the latter
-        # means every mutation's auto-push has been a silent no-op.
-        if not _remote_names(store.code_root):
+        # No push target. Distinguish "local by design" (nothing to say) from
+        # "there IS a remote and nobody has decided" — the latter means every
+        # mutation's auto-push has been a silent no-op. The ledger says which it is:
+        # the sentinel is a decision, an unset value pre-dates the sentinel. A repo
+        # with no remotes at all has nowhere to push either way.
+        if store.local_only or not _remote_names(store.code_root):
             return BackupStatus("local-only", 0, None, None)
         return BackupStatus("unconfigured", _count_range(store, "HEAD"), None, None)
     tracked = _has_tracking_ref(store)
@@ -965,6 +1011,11 @@ def grep(store: Store, query: str):
 
 
 def sync(store: Store):
+    if store.local_only:
+        raise TickError(
+            "this ledger is local by design (tick.remote = none) — there is nothing to sync\n"
+            "  back it up:  tick init --remote origin"
+        )
     if not store.remote:
         raise TickError("no remote configured (set tick.remote or pass --remote to init)")
     remote_heads = git(["ls-remote", "--heads", store.remote, store.branch], store.worktree, check=False)

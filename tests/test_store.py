@@ -483,23 +483,57 @@ def _bare_remote(repo, tmp_path):
     return bare
 
 
-def test_init_enables_autopush_and_detects_remote(repo, tmp_path):
+def test_init_leaves_a_fresh_ledger_detached(repo, tmp_path):
+    """Backup is opt-in. A repo with an `origin` no longer gets its ledger silently
+    wired to it — the fresh ledger records the `none` sentinel, so it is local *by
+    design* rather than indistinguishable from one somebody forgot to configure."""
     _bare_remote(repo, tmp_path)
     st = S.init(cwd=repo)
     assert st.autopush is True
-    assert st.remote == "origin"
+    assert st.remote is None
+    assert st.local_only is True
+    assert _git(["config", "--get", "tick.remote"], repo).stdout.strip() == "none"
     assert _git(["config", "--get", "tick.autopush"], repo).stdout.strip() == "true"
 
 
+def test_init_attaches_a_remote_when_asked_for_one(repo, tmp_path):
+    _bare_remote(repo, tmp_path)
+    st = S.init(cwd=repo, remote="origin")
+    assert st.remote == "origin"
+    assert st.local_only is False
+    assert _git(["config", "--get", "tick.remote"], repo).stdout.strip() == "origin"
+
+
+def test_init_accepts_the_none_sentinel_without_validating_it_as_a_remote(repo):
+    """`none` is a policy statement, not a remote name, so the remote-name validator
+    must not reject it in a repo that has no remotes at all."""
+    st = S.init(cwd=repo, remote="none")
+    assert st.remote is None
+    assert st.local_only is True
+    assert _git(["config", "--get", "tick.remote"], repo).stdout.strip() == "none"
+
+
+def test_reinit_with_none_detaches_a_ledger_that_had_a_remote(repo, tmp_path):
+    """The reverse of attaching: `tick init --remote none` on a ledger already
+    pushing to `origin` stops the pushing and the warnings, without touching data."""
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo, remote="origin")
+    st = S.init(cwd=repo, remote="none")
+    assert st.remote is None
+    assert st.local_only is True
+    assert _git(["config", "--get", "tick.remote"], repo).stdout.strip() == "none"
+
+
 def test_reinit_with_remote_attaches_it(repo, tmp_path):
-    """`tick init` run before the remote existed leaves tick.remote unset; re-running
-    `tick init --remote origin` once the remote is configured must attach it rather
-    than silently drop the argument."""
+    """`tick init` run before the remote existed leaves the ledger detached;
+    re-running `tick init --remote origin` once the remote is configured must attach
+    it rather than silently drop the argument."""
     st = S.init(cwd=repo)                                 # no remote yet
     assert st.remote is None
     _bare_remote(repo, tmp_path)                          # remote added afterwards
     st2 = S.init(cwd=repo, remote="origin")
     assert st2.remote == "origin"
+    assert st2.local_only is False
     assert _git(["config", "--get", "tick.remote"], repo).stdout.strip() == "origin"
 
 
@@ -521,7 +555,7 @@ def test_autopush_backs_up_ledger_branch_to_remote(repo, tmp_path):
     remote. autopush is toggled off for the `add` so the single explicit push we
     await doesn't race the verb's own background push over creating the branch."""
     bare = _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)
     st = S.resolve(cwd=repo)
     S.add(st, "back me up")                         # local commit only
@@ -539,15 +573,27 @@ def test_autopush_is_noop_without_remote_or_when_disabled(repo, tmp_path):
     assert S._autopush(st) is None    # nothing to push to
 
     _bare_remote(repo, tmp_path)
+    S.init(cwd=repo, remote="origin")  # attach it, so only autopush is under test
     _git(["config", "tick.autopush", "false"], repo)
     st2 = S.resolve(cwd=repo)
+    assert st2.remote == "origin"
     assert st2.autopush is False
     assert S._autopush(st2) is None   # opted out
 
 
+def test_autopush_is_noop_for_a_detached_ledger(repo, tmp_path):
+    """A repo that *has* a remote but a ledger declared local by design: autopush
+    must stay a no-op, not fall back to the repo's remote."""
+    _bare_remote(repo, tmp_path)
+    st = S.init(cwd=repo, remote="none")
+    assert st.autopush is True and st.local_only is True
+    S.add(st, "stays here")
+    assert S._autopush(S.resolve(cwd=repo)) is None
+
+
 def test_unpushed_count_tracks_backlog(repo, tmp_path):
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)   # control pushes by hand here
     st = S.resolve(cwd=repo)
     S.add(st, "one")                                   # local commit only
@@ -567,7 +613,7 @@ def test_unpushed_count_counts_everything_when_never_pushed(repo, tmp_path):
     ref to diff against. That used to swallow the failed int() and report 0 — a
     clean bill of health for a ledger with zero backup. Count the whole branch."""
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)
     st = S.resolve(cwd=repo)
     S.add(st, "never leaves this machine")
@@ -587,7 +633,7 @@ def _backdate(clock_skew):
 
 def test_backup_status_ok_when_remote_has_everything(repo, tmp_path):
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)   # drive the push through sync alone
     st = S.resolve(cwd=repo)
     S.add(st, "one")
@@ -602,7 +648,7 @@ def test_backup_status_is_pending_inside_the_grace_window(repo, tmp_path):
     push takes seconds, so the tracking ref lags. A backlog whose OLDEST commit is
     younger than the grace window is a push in flight, not a failure — stay quiet."""
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)   # stand in for a push still in flight
     st = S.resolve(cwd=repo)
     S.add(st, "just written")
@@ -616,7 +662,7 @@ def test_backup_status_goes_stale_past_the_grace_window(repo, tmp_path):
     """Once the backlog outlives the window, a push really has failed — say so,
     with the age, so the user can tell a hiccup from a week of silent divergence."""
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)
     st = S.resolve(cwd=repo)
     S.add(st, "already safe")
@@ -633,7 +679,7 @@ def test_backup_status_grace_window_uses_the_oldest_commit(repo, tmp_path):
     """Anchor on the OLDEST unpushed commit, not the newest: a fresh mutation on
     top of a real backlog must not reset the clock and mute a genuine warning."""
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)
     st = S.resolve(cwd=repo)
     S.add(st, "already safe")
@@ -647,7 +693,7 @@ def test_backup_status_grace_window_uses_the_oldest_commit(repo, tmp_path):
 
 def test_backup_status_flags_a_ledger_that_has_never_been_pushed(repo, tmp_path):
     _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)
     st = S.resolve(cwd=repo)
     S.add(st, "no backup anywhere")
@@ -657,14 +703,18 @@ def test_backup_status_flags_a_ledger_that_has_never_been_pushed(repo, tmp_path)
     assert status.count == _count(repo, "refs/heads/tick")
 
 
-def test_backup_status_flags_a_repo_with_remotes_but_no_tick_remote(repo, tmp_path):
+def test_backup_status_flags_a_legacy_ledger_with_tick_remote_unset(repo, tmp_path):
     """witness-qualifier in the wild: 22 ticks, 48 ledger commits, an `origin` on
     the repo — but `tick.remote` never set, so autopush was a silent no-op and the
-    backlog gauge returned 0. The one case where a warning matters most."""
+    backlog gauge returned 0. Since backup went opt-in, a *fresh* init writes the
+    `none` sentinel, so an unset value can only come from a pre-sentinel ledger:
+    genuinely undecided, and still the case where a warning matters most."""
     S.init(cwd=repo)                       # inited before the remote existed
+    _git(["config", "--unset", "tick.remote"], repo)   # the pre-sentinel state
     _bare_remote(repo, tmp_path)           # remote added to the repo afterwards
     st = S.resolve(cwd=repo)
     assert st.remote is None
+    assert st.local_only is False          # undecided, NOT declared local
     S.add(st, "believed to be backed up")
     status = S.backup_status(st)
     assert status.state == "unconfigured"
@@ -682,6 +732,30 @@ def test_backup_status_stays_quiet_for_a_repo_with_no_remotes_at_all(repo):
     assert status.should_warn is False
 
 
+def test_backup_status_stays_quiet_for_a_declared_local_ledger(repo, tmp_path):
+    """R-7K4M, the point of the sentinel: a repo that HAS a remote, with a ledger
+    deliberately kept off it. The old gauge could not tell this from a
+    misconfiguration, so it warned on every `tick ls`, forever, with no way out."""
+    _bare_remote(repo, tmp_path)
+    S.init(cwd=repo)                       # detached by default
+    st = S.resolve(cwd=repo)
+    assert st.local_only is True
+    S.add(st, "local by design")
+    status = S.backup_status(st, clock=_backdate(4 * 3600))
+    assert status.state == "local-only"
+    assert status.should_warn is False
+    assert status.count == 0
+
+
+def test_sync_refuses_a_detached_ledger(repo, tmp_path):
+    """`tick sync` on a ledger declared local names the state and the way out of
+    it, rather than the generic 'no remote configured' of an undecided ledger."""
+    _bare_remote(repo, tmp_path)
+    st = S.init(cwd=repo, remote="none")
+    with pytest.raises(S.TickError, match="local by design"):
+        S.sync(st)
+
+
 def test_format_age_is_human_and_coarse():
     assert S.format_age(5) == "just now"
     assert S.format_age(90) == "1m ago"
@@ -694,7 +768,7 @@ def test_sync_round_trips_through_a_real_remote(repo, tmp_path):
     commits back, reconciling divergence without conflict (one file per tick).
     Exercises the real ls-remote -> pull --rebase -> push path."""
     bare = _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     _git(["config", "tick.autopush", "false"], repo)   # drive pushes through sync only
     st = S.resolve(cwd=repo)
 
@@ -726,9 +800,13 @@ def test_sync_round_trips_through_a_real_remote(repo, tmp_path):
 def test_init_adopts_existing_remote_ledger(repo, tmp_path):
     """A second contributor running `tick init` on a repo whose ledger a colleague
     already pushed must pick up that branch (shared history + their ticks), not mint
-    a fresh divergent orphan that would later collide on push."""
+    a fresh divergent orphan that would later collide on push.
+
+    This is the one exception to the opt-in default: a bare `tick init` attaches the
+    remote here without being asked, because the ledger is *already* shared — a
+    detached orphan alongside it is nobody's intent."""
     bare = _bare_remote(repo, tmp_path)
-    # First contributor initializes and pushes both the code and the ledger.
+    # First contributor initializes (detached), then pushes the code and the ledger.
     st = S.init(cwd=repo)
     _git(["config", "tick.autopush", "false"], repo)
     st = S.resolve(cwd=repo)
@@ -808,7 +886,7 @@ def test_heal_recovers_from_remote_when_local_branch_is_gone(repo, tmp_path):
     must re-fetch the branch from the remote, re-check-out the worktree, and rewire
     upstream tracking so sync keeps working."""
     bare = _bare_remote(repo, tmp_path)
-    S.init(cwd=repo)
+    S.init(cwd=repo, remote="origin")
     st = S.resolve(cwd=repo)
     a = S.add(st, "pushed task")
     S._autopush(st).wait(timeout=30)                 # ensure the ledger is on the remote
@@ -856,7 +934,12 @@ def test_commits_bypass_host_repo_commit_hooks(repo):
 
 
 def test_sync_without_remote_errors(repo):
-    st = S.init(cwd=repo)                                # base fixture has no remote
+    """A pre-sentinel ledger with `tick.remote` unset keeps the generic message —
+    it is undecided rather than declared local, and `tick sync` still can't run."""
+    S.init(cwd=repo)                                     # base fixture has no remote
+    _git(["config", "--unset", "tick.remote"], repo)     # the pre-sentinel state
+    st = S.resolve(cwd=repo)
+    assert st.local_only is False
     with pytest.raises(S.TickError, match="no remote"):
         S.sync(st)
 
